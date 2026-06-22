@@ -1,0 +1,584 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 09 — NoSQL Databases</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .nosql-type-header {
+      display: flex; align-items: center; gap: 1rem; margin: 2rem 0 0.75rem;
+    }
+    .nosql-badge {
+      background: var(--accent); color: white; font-family: var(--font-ui);
+      font-weight: 800; font-size: 0.78rem; padding: 0.3rem 0.75rem;
+      border-radius: 999px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .nosql-badge.redis { background: #dc2626; }
+    .nosql-badge.mongo { background: #16a34a; }
+    .nosql-badge.cassandra { background: #d97706; }
+    .nosql-badge.graph { background: #7c3aed; }
+
+    .decision-table th { font-size: 0.82rem; }
+    .decision-table td { font-size: 0.82rem; }
+    .use-yes { color: var(--success); font-weight: 700; }
+    .use-no  { color: var(--muted); }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 09</div>
+    <div class="pillar-badge">NoSQL</div>
+    <h1 class="lesson-title">NoSQL Databases</h1>
+    <p class="lesson-subtitle">MongoDB, Redis, Cassandra — what each is for, how data is modeled, and when to reach for each over PostgreSQL.</p>
+  </header>
+
+  <h2>Why NoSQL Exists</h2>
+  <p>NoSQL databases weren't invented to replace SQL. They were invented to solve specific problems that relational databases handle poorly at scale:</p>
+  <ul>
+    <li><strong>Schema flexibility:</strong> Documents with varying shapes stored without migrations</li>
+    <li><strong>Horizontal write scale:</strong> Relational primaries have one WAL; NoSQL databases like Cassandra distribute writes by design</li>
+    <li><strong>Specific access patterns:</strong> Key-value lookups (Redis), graph traversals (Neo4j), time-series (InfluxDB) are awkward in SQL</li>
+    <li><strong>Operational simplicity for specific shapes:</strong> Storing and retrieving a JSON blob is simpler in MongoDB than mapping it to a relational schema</li>
+  </ul>
+
+  <div class="callout warning">
+    <span class="callout-label">The right framing</span>
+    NoSQL is not "better than SQL." PostgreSQL with JSONB handles semi-structured data. PostgreSQL with proper indexing handles most scale scenarios. Choose NoSQL when a specific database's model is a materially better fit for your access pattern — not because it's fashionable or "scales better."
+  </div>
+
+
+  <!-- MONGODB -->
+  <div class="nosql-type-header">
+    <div class="nosql-badge mongo">Document Store</div>
+    <h2 style="margin:0">MongoDB</h2>
+  </div>
+
+  <h3>The data model</h3>
+  <p>Data is stored as JSON-like documents (BSON internally) in collections. No fixed schema per collection — different documents can have different fields. Documents can nest arrays and sub-documents.</p>
+
+  <pre><code>// A MongoDB application document (flexible shape)
+{
+  "_id": ObjectId("..."),
+  "user_id": "abc-123",
+  "job": {
+    "title": "Backend Engineer",
+    "company": "Stripe",
+    "location": "Remote"
+  },
+  "status": "applied",
+  "ai_analysis": {
+    "match_score": 87,
+    "gaps": ["system design", "Kubernetes"],
+    "highlights": ["FastAPI", "PostgreSQL", "Docker"]
+  },
+  "notes": "Strong fit for their infra team",
+  "applied_at": ISODate("2024-06-01")
+}</code></pre>
+
+  <h3>Embedding vs Referencing — the critical design decision</h3>
+  <p>In MongoDB, you decide at schema design time whether related data is embedded in the same document or stored separately and referenced by ID. This decision is permanent and shapes your entire query pattern.</p>
+
+  <table>
+    <thead>
+      <tr><th>Approach</th><th>When to use</th><th>Advantage</th><th>Disadvantage</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Embed</strong><br>(nested sub-document)</td>
+        <td>Data that is always queried together. Data with 1:1 or bounded 1:few relationship. Data that doesn't need to be independently queried.</td>
+        <td>Single read to get everything. Atomic update of parent + embedded data.</td>
+        <td>Document can grow unbounded (1:many with high cardinality). Embedded data can't be queried in isolation efficiently.</td>
+      </tr>
+      <tr>
+        <td><strong>Reference</strong><br>(store an ID, join in app)</td>
+        <td>Data queried independently. Data with 1:many (large) or many:many relationships. Data shared across documents.</td>
+        <td>Avoids document bloat. Can query embedded entity independently.</td>
+        <td>Requires multiple queries or $lookup (aggregation pipeline join). No atomic update across documents without a transaction.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Rule of thumb</span>
+    Embed when: "I always read this together" and the nested array is bounded. Reference when: the related data grows unboundedly (e.g. a user's message history), or it's queried independently, or it's shared across many parents.
+  </div>
+
+  <h3>Aggregation pipeline</h3>
+  <pre><code>// MongoDB's equivalent of SQL GROUP BY + JOIN
+db.applications.aggregate([
+  // Stage 1: filter
+  { $match: { tenant_id: "goat-001", status: "applied" } },
+
+  // Stage 2: join with users (equivalent of LEFT JOIN)
+  { $lookup: {
+      from: "users",
+      localField: "user_id",
+      foreignField: "_id",
+      as: "user"
+  }},
+
+  // Stage 3: unwind the joined array
+  { $unwind: "$user" },
+
+  // Stage 4: group and aggregate
+  { $group: {
+      _id: "$user.plan",
+      total_applications: { $sum: 1 },
+      avg_score: { $avg: "$ai_analysis.match_score" }
+  }},
+
+  // Stage 5: sort
+  { $sort: { total_applications: -1 } }
+]);</code></pre>
+
+  <h3>When MongoDB over PostgreSQL?</h3>
+  <ul>
+    <li>Documents genuinely vary in shape across records (e.g. e-commerce product catalog — a shirt and a laptop have completely different attribute sets)</li>
+    <li>Rapid schema evolution without migrations (prototyping)</li>
+    <li>Data that is naturally document-shaped and always accessed as a unit</li>
+  </ul>
+  <p><strong>When NOT to choose MongoDB:</strong> You need strong ACID across multiple documents, complex cross-collection joins are common, or the data is naturally relational. PostgreSQL with JSONB columns handles semi-structured data while retaining full SQL and ACID.</p>
+
+
+  <!-- REDIS -->
+  <div class="nosql-type-header">
+    <div class="nosql-badge redis">Key-Value Store</div>
+    <h2 style="margin:0">Redis</h2>
+  </div>
+
+  <h3>The data model</h3>
+  <p>Redis is an in-memory key-value store with a rich set of data structures. Every key maps to one of: String, List, Hash, Set, Sorted Set, Stream, and more. Operations are atomic.</p>
+
+  <table>
+    <thead>
+      <tr><th>Data structure</th><th>Use case</th><th>Key commands</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>String</strong></td>
+        <td>Cache any serialized value. Counters. Feature flags. Session tokens.</td>
+        <td><code>GET, SET, INCR, EXPIRE</code></td>
+      </tr>
+      <tr>
+        <td><strong>Hash</strong></td>
+        <td>Store an object's fields without serializing the whole thing. Update individual fields.</td>
+        <td><code>HGET, HSET, HMGET, HGETALL</code></td>
+      </tr>
+      <tr>
+        <td><strong>List</strong></td>
+        <td>Message queues. Recent activity feeds. Task queues.</td>
+        <td><code>LPUSH, RPOP, LRANGE, BLPOP</code></td>
+      </tr>
+      <tr>
+        <td><strong>Set</strong></td>
+        <td>Unique item tracking. Tags. Union/intersection queries.</td>
+        <td><code>SADD, SMEMBERS, SINTERSTORE, SUNIONSTORE</code></td>
+      </tr>
+      <tr>
+        <td><strong>Sorted Set (ZSet)</strong></td>
+        <td>Leaderboards. Rate limiting. Time-sorted feeds.</td>
+        <td><code>ZADD, ZRANGE, ZRANK, ZRANGEBYSCORE</code></td>
+      </tr>
+      <tr>
+        <td><strong>Stream</strong></td>
+        <td>Append-only log. Event sourcing. Pub/sub with persistence.</td>
+        <td><code>XADD, XREAD, XGROUP</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <pre><code># applyGOAT: caching AI-generated cover letter
+import json
+
+async def get_cover_letter(user_id: str, job_id: str) -> str:
+    cache_key = f"cover_letter:{user_id}:{job_id}"
+
+    # Check cache
+    cached = await redis.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    # Generate (expensive)
+    result = await ai_service.generate_cover_letter(user_id, job_id)
+
+    # Store with TTL
+    await redis.setex(cache_key, 3600, json.dumps(result))
+    return result
+
+# Rate limiting with Redis sorted set
+async def is_rate_limited(user_id: str) -> bool:
+    key = f"ratelimit:{user_id}"
+    now = time.time()
+    window = 60  # 1 minute
+
+    pipe = redis.pipeline()
+    pipe.zremrangebyscore(key, 0, now - window)  # remove old entries
+    pipe.zadd(key, {str(now): now})              # add current request
+    pipe.zcard(key)                               # count in window
+    pipe.expire(key, window)
+    results = await pipe.execute()
+    return results[2] > 100  # 100 requests per minute limit</code></pre>
+
+  <h3>Persistence options</h3>
+  <table>
+    <thead>
+      <tr><th>Mode</th><th>How it works</th><th>Durability</th><th>Recovery time</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>RDB (snapshot)</strong></td>
+        <td>Periodic full dump to disk (e.g. every 5min if 1000 writes)</td>
+        <td>May lose up to 5min of writes on crash</td>
+        <td>Fast (load snapshot)</td>
+      </tr>
+      <tr>
+        <td><strong>AOF (append-only file)</strong></td>
+        <td>Log every write command. Replay on restart.</td>
+        <td>Configurable: every second, or every write</td>
+        <td>Slower (replay log)</td>
+      </tr>
+      <tr>
+        <td><strong>RDB + AOF</strong></td>
+        <td>Both. AOF provides durability, RDB provides fast restart.</td>
+        <td>Near-zero data loss</td>
+        <td>Moderate</td>
+      </tr>
+      <tr>
+        <td><strong>No persistence</strong></td>
+        <td>Pure in-memory cache. Data lost on restart.</td>
+        <td>None — cache only</td>
+        <td>Instant (empty)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT use</span>
+    For caching AI outputs: no persistence (cache-aside, warm on miss). For rate limiting and session state: AOF + every-second fsync (small data, high durability need). For job queues (AI generation tasks): AOF to avoid losing queued jobs on restart.
+  </div>
+
+
+  <!-- CASSANDRA -->
+  <div class="nosql-type-header">
+    <div class="nosql-badge cassandra">Wide-Column Store</div>
+    <h2 style="margin:0">Cassandra / ScyllaDB</h2>
+  </div>
+
+  <h3>The data model</h3>
+  <p>Cassandra organizes data in tables with a mandatory <strong>partition key</strong> and optional <strong>clustering columns</strong>. The partition key determines which node stores the data. Clustering columns determine the sort order within a partition.</p>
+
+  <pre><code>-- Cassandra schema for Discord-style message storage
+CREATE TABLE messages (
+  channel_id   UUID,           -- Partition key: all messages for a channel on one node
+  message_id   TIMEUUID,       -- Clustering key: sorted chronologically within partition
+  user_id      UUID,
+  content      TEXT,
+  created_at   TIMESTAMP,
+  PRIMARY KEY (channel_id, message_id)
+) WITH CLUSTERING ORDER BY (message_id DESC);
+
+-- This table is optimized for ONE query:
+-- "Get the last N messages in channel X"
+SELECT * FROM messages
+WHERE channel_id = ? LIMIT 100;</code></pre>
+
+  <h3>Design rule: model your tables for your queries</h3>
+  <p>In SQL, normalize first, query with JOINs. In Cassandra, design your table for each specific query pattern. Denormalization is intentional — you often create multiple tables for the same data to support different access patterns.</p>
+
+  <table>
+    <thead>
+      <tr><th>Concept</th><th>What it does</th><th>Design constraint</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Partition key</strong></td>
+        <td>Routes data to the correct node via consistent hashing. All rows with the same partition key live on the same node(s).</td>
+        <td>Choose a partition key with high cardinality and even distribution. Low-cardinality keys = hot spots. Avoid partition keys that grow unboundedly (a single partition can't exceed ~100MB).</td>
+      </tr>
+      <tr>
+        <td><strong>Clustering key</strong></td>
+        <td>Determines sort order within a partition. You can range-scan on clustering columns.</td>
+        <td>You can only efficiently filter on clustering columns in prefix order (same as SQL composite index left-prefix rule).</td>
+      </tr>
+      <tr>
+        <td><strong>Tombstones</strong></td>
+        <td>DELETEs don't remove data — they write a tombstone marker. The old data is removed at compaction.</td>
+        <td>Heavy delete workloads create tombstone accumulation, which slows reads (the scanner must check each tombstone's visibility). Avoid delete-heavy patterns; use TTL instead.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Cassandra is not a general-purpose database</span>
+    Cassandra has no JOINs, no subqueries, limited aggregation. You cannot query by non-key columns without allowing full partition scans (ALLOW FILTERING) which are catastrophically slow. Every query pattern needs its own table. It's purpose-built for: high write throughput, large datasets, geographically distributed write availability. If you don't need these, PostgreSQL is the better choice.
+  </div>
+
+
+  <!-- DECISION GUIDE -->
+  <h2>When to Use What</h2>
+
+  <table class="decision-table">
+    <thead>
+      <tr>
+        <th>Scenario</th>
+        <th>PostgreSQL</th>
+        <th>MongoDB</th>
+        <th>Redis</th>
+        <th>Cassandra</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Complex relational queries, JOINs, reporting</td>
+        <td class="use-yes">✓ Primary choice</td>
+        <td class="use-no">Painful ($lookup)</td>
+        <td class="use-no">Not applicable</td>
+        <td class="use-no">No JOINs</td>
+      </tr>
+      <tr>
+        <td>Strong ACID transactions</td>
+        <td class="use-yes">✓ Full ACID</td>
+        <td class="use-yes">✓ Multi-doc (v4+)</td>
+        <td class="use-no">Single-key atomic ops only</td>
+        <td class="use-no">Lightweight transactions (limited)</td>
+      </tr>
+      <tr>
+        <td>Highly variable document shapes</td>
+        <td class="use-yes">✓ JSONB columns</td>
+        <td class="use-yes">✓ Native document model</td>
+        <td class="use-no">Not a fit</td>
+        <td class="use-no">Fixed schema</td>
+      </tr>
+      <tr>
+        <td>Sub-millisecond caching</td>
+        <td class="use-no">Disk-backed, ~1ms+</td>
+        <td class="use-no">Not a cache</td>
+        <td class="use-yes">✓ In-memory, ~0.1ms</td>
+        <td class="use-no">Not a cache</td>
+      </tr>
+      <tr>
+        <td>Rate limiting, session storage</td>
+        <td class="use-no">Overkill, adds load</td>
+        <td class="use-no">Not a fit</td>
+        <td class="use-yes">✓ Atomic ops, TTL native</td>
+        <td class="use-no">Not a fit</td>
+      </tr>
+      <tr>
+        <td>Very high write throughput (millions/sec)</td>
+        <td class="use-no">Single WAL bottleneck</td>
+        <td class="use-no">Sharding needed</td>
+        <td class="use-no">Memory-bounded</td>
+        <td class="use-yes">✓ Designed for this</td>
+      </tr>
+      <tr>
+        <td>Time-series append-only data at scale</td>
+        <td class="use-no">Requires partitioning</td>
+        <td class="use-no">Not optimized</td>
+        <td class="use-no">Memory-bounded</td>
+        <td class="use-yes">✓ With TTL, perfect fit</td>
+      </tr>
+      <tr>
+        <td>Graph traversals (social graph, recommendations)</td>
+        <td class="use-no">Recursive CTEs, slow at depth</td>
+        <td class="use-no">Not a fit</td>
+        <td class="use-no">Not a fit</td>
+        <td class="use-no">Not a fit (use Neo4j)</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Decision making</div>
+          <div class="playbook-q-text">"Why would you choose MongoDB over PostgreSQL for a project?"</div>
+          <div class="playbook-q-probe">Follow-up: "Does MongoDB give you full ACID transactions?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "The main case is genuinely variable document shapes where a rigid relational schema is a poor fit — for example, a product catalog with hundreds of different product types each having completely different attributes. MongoDB lets you store each product type naturally without nullable columns or a complex EAV schema. A secondary case is when schema is evolving rapidly in early product development and you want to avoid migrations. That said, PostgreSQL with JSONB handles most semi-structured data cases while giving you full SQL and stronger ACID guarantees. I'd reach for MongoDB only when the document model is a materially better fit, not out of habit."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Since MongoDB 4.0, yes — multi-document ACID transactions are supported. But they come with performance overhead and MongoDB's transaction model is more limited than PostgreSQL's. Single-document operations in MongoDB are always atomic by design (because the document is the unit of atomicity). Cross-collection transactions work but add latency. For systems where strong ACID across many operations is the primary requirement, PostgreSQL remains the cleaner choice. MongoDB's transaction support is 'good enough' for many use cases, not a direct replacement for Postgres's transactional model."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Redis data structures</div>
+          <div class="playbook-q-text">"Design a real-time leaderboard using Redis. Users get scores that update frequently."</div>
+          <div class="playbook-q-probe">Follow-up: "How would you get the top 10 users and a specific user's rank?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Redis Sorted Set (ZSet) — designed exactly for this. Each member is a user_id, score is their score. Updates are O(log n): ZADD leaderboard 1250 'user:123'. Range queries by score or rank are O(log n + k). The data structure maintains sorted order automatically on every update — no re-sorting needed. This handles thousands of score updates per second at sub-millisecond latency. Store in Redis as the primary for leaderboard reads, persist to PostgreSQL asynchronously for durability."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Top 10: <code>ZREVRANGE leaderboard 0 9 WITHSCORES</code> — returns top 10 by score descending, with scores. O(log n + 10). A specific user's rank: <code>ZREVRANK leaderboard 'user:123'</code> — returns 0-based rank from the top. O(log n). Both are very fast even with millions of users in the sorted set. One gotcha: if you need the user's display name, you'll need a second lookup (HGET or a Redis hash for user metadata, or a database join). The sorted set stores IDs, not display names."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Cassandra design</div>
+          <div class="playbook-q-text">"Why does Cassandra require you to design tables around queries rather than normalizing data?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's a hot partition and how do you prevent it?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Cassandra has no JOINs and can only efficiently query by partition key then clustering columns. If your data is normalized into related tables, you'd need JOINs to assemble a response — impossible in Cassandra. Instead, you design one table per query pattern, denormalizing the data so everything needed for a read lives in the same partition. This means duplicating data across multiple tables. The trade-off: write amplification (update multiple tables) in exchange for fast, predictable reads where the partition key routes you directly to the right nodes in O(1)."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "A hot partition: one partition key receiving disproportionately more traffic than others. Example: partition_key = 'status', status = 'active' — all active users hit one partition, one set of nodes. Prevention: choose high-cardinality partition keys (user_id, channel_id, tenant_id — things with many unique values). Avoid low-cardinality keys (status, country, date) as standalone partition keys. If you need to query by status, create a secondary index or a separate table with a composite partition key (status, user_id bucket) that spreads the data. For a 'celebrity problem' (one user_id getting millions of reads), add a random suffix: partition_key = user_id + '_' + RANDOM(0-9) spreads across 10 partitions."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Candidates choose NoSQL "for scale" without specifying what kind of scale (read, write, data volume, distribution) and without naming what they'd lose (JOINs, ACID, flexible querying). Strong answer: name the specific constraint that makes the SQL model a poor fit, name the NoSQL model that fits it, and name what you're giving up.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0008-database-internals.html">Lesson 08 — Database Internals</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0010-vector-databases.html">Lesson 10 — Vector Databases</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Not sure whether to use PostgreSQL JSONB or MongoDB for a specific applyGOAT data shape? Want to design a Redis-backed rate limiter for your FastAPI endpoints? Confused about how Cassandra's partition key affects your design choices?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 09 &nbsp;·&nbsp; NoSQL Databases &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A product catalog stores shirts, laptops, and furniture — each with completely different attributes. You need rapid schema evolution. Which database model fits best?",
+    options: [
+      "PostgreSQL with a highly normalized schema and EAV (entity-attribute-value) tables",
+      "MongoDB document store — flexible schema, each product type stored naturally as a document",
+      "Cassandra — high write throughput is needed for inventory updates",
+      "Redis — products are frequently looked up by ID"
+    ],
+    answer: 1,
+    explanation: "Variable document shapes with completely different attributes per type is MongoDB's primary use case. PostgreSQL can handle this with JSONB but requires more schema work. The key: the data is genuinely document-shaped with no standard schema across types. If attributes were uniform, PostgreSQL would be cleaner."
+  },
+  {
+    q: "You need a real-time leaderboard where scores update thousands of times per second. Which Redis data structure fits best?",
+    options: [
+      "String — store the entire leaderboard JSON",
+      "List — append each score update as a new entry",
+      "Sorted Set (ZSet) — maintains sorted order automatically, O(log n) updates and range queries",
+      "Hash — store each user's score as a field"
+    ],
+    answer: 2,
+    explanation: "Sorted Set: ZADD is O(log n), ZREVRANGE (top N) is O(log n + k), ZREVRANK (user's position) is O(log n). Sorted order is maintained automatically on every update. This handles thousands of updates/second at sub-millisecond latency. Strings store the whole thing (rewrite on every update). Lists have no sorted access. Hashes have no sorted access."
+  },
+  {
+    q: "In a Cassandra table, what does the partition key determine?",
+    options: [
+      "The sort order of rows within the table",
+      "Which node(s) store the data for that partition",
+      "The primary key uniqueness constraint",
+      "The compression algorithm used for the partition"
+    ],
+    answer: 1,
+    explanation: "The partition key is hashed via consistent hashing to determine which node(s) are responsible for storing that data. All rows with the same partition key live on the same node(s). This is why choosing a high-cardinality partition key is critical — low cardinality = few distinct hash values = hot partitions = uneven load."
+  },
+  {
+    q: "You're designing a MongoDB schema for blog posts and comments. Posts have at most 10 comments. Should you embed or reference comments?",
+    options: [
+      "Reference — comments should always be in their own collection for flexibility",
+      "Embed — bounded (max 10), always read together with the post, atomic updates are natural",
+      "Embed — only if comments never need to be deleted",
+      "Reference — embedding arrays in MongoDB is not supported"
+    ],
+    answer: 1,
+    explanation: "Embed when: data is always read together, the array is bounded (max 10 here, well under MongoDB's 16MB document limit), and you want atomic updates. Reference when: the array grows unboundedly (imagine a viral post with 10,000 comments), or comments need to be queried independently, or comments are shared across multiple documents."
+  },
+  {
+    q: "Redis persistence mode RDB vs AOF — which provides stronger durability guarantees and what's the trade-off?",
+    options: [
+      "RDB is stronger — full snapshots capture all data",
+      "AOF is stronger — logs every write; can be configured to fsync every second or every write. Trade-off: larger files, slower restart (must replay log)",
+      "They are equivalent — both provide the same durability",
+      "AOF is stronger but requires more memory than RDB"
+    ],
+    answer: 1,
+    explanation: "AOF logs every write command. With appendfsync=everysec, you lose at most 1 second of writes on crash. With appendfsync=always, near-zero data loss (every write fsynced). RDB takes periodic snapshots — you may lose minutes of writes. Trade-off: AOF files are larger (full command log vs compact snapshot) and restart requires replaying the entire log. RDB + AOF combined: use AOF for durability, RDB for fast restart."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

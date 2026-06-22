@@ -1,0 +1,594 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 04 — SQL Fundamentals & Query Anatomy</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .order-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 1.5rem 0; font-family: var(--font-ui); }
+    .order-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
+    .order-row:last-child { border-bottom: none; }
+    .order-step { background: var(--accent); color: white; font-weight: 800; font-size: 0.85rem; padding: 0.75rem 1rem; min-width: 2.5rem; display: flex; align-items: center; justify-content: center; }
+    .order-clause { background: var(--code-bg); color: var(--code-text); font-family: var(--font-mono); font-size: 0.82rem; padding: 0.75rem 1rem; min-width: 130px; display: flex; align-items: center; border-right: 1px solid #333; }
+    .order-desc { padding: 0.75rem 1rem; font-size: 0.86rem; line-height: 1.5; flex: 1; display: flex; align-items: center; }
+    .order-note { padding: 0.75rem 1rem; font-size: 0.8rem; color: var(--muted); font-style: italic; display: flex; align-items: center; min-width: 160px; border-left: 1px solid var(--border); }
+
+    .join-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0; }
+    .join-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; font-family: var(--font-ui); font-size: 0.86rem; }
+    .join-card-name { font-weight: 700; font-size: 0.9rem; margin-bottom: 0.3rem; }
+    .join-card-desc { color: var(--muted); font-size: 0.82rem; margin-bottom: 0.5rem; }
+    @media (max-width: 640px) { .join-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 04</div>
+    <div class="pillar-badge">SQL</div>
+    <h1 class="lesson-title">SQL Fundamentals<br>& Query Anatomy</h1>
+    <p class="lesson-subtitle">The shape of every SQL query, and why the order you write it is not the order it runs.</p>
+  </header>
+
+  <h2>The Six Clauses of a SELECT</h2>
+  <p>Every SQL query is built from these six clauses. Most engineers know them by rote. The ones who perform in interviews know exactly what each one does, when the database evaluates it, and what it has access to at that moment.</p>
+
+  <pre><code>SELECT   job_status, COUNT(*) AS total, AVG(score) AS avg_score
+FROM     applications
+JOIN     users ON applications.user_id = users.id
+WHERE    tenant_id = 'goat-001'  AND created_at > '2024-01-01'
+GROUP BY job_status
+HAVING   COUNT(*) > 10
+ORDER BY avg_score DESC
+LIMIT    5;</code></pre>
+
+  <h2>The Execution Order — Most Interviewers Are Testing This</h2>
+  <p>You write SQL in a human-readable order but the database executes it in a completely different order. This is not a trivia question — it has concrete consequences for what aliases and filters are valid where.</p>
+
+  <div class="order-table">
+    <div class="order-row">
+      <div class="order-step">1</div>
+      <div class="order-clause">FROM</div>
+      <div class="order-desc">Identifies the base table(s). If there's a JOIN, it also happens here — the engine builds the initial working set of rows.</div>
+      <div class="order-note">Columns and rows first exist here</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">2</div>
+      <div class="order-clause">WHERE</div>
+      <div class="order-desc">Filters the rows from step 1. Operates row-by-row before any grouping occurs.</div>
+      <div class="order-note">Cannot use SELECT aliases — they don't exist yet</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">3</div>
+      <div class="order-clause">GROUP BY</div>
+      <div class="order-desc">Collapses matching rows into groups. After this point, you work with groups, not individual rows.</div>
+      <div class="order-note">Non-aggregated SELECT columns must appear here</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">4</div>
+      <div class="order-clause">HAVING</div>
+      <div class="order-desc">Filters groups (not rows). Like WHERE but operates after grouping — can use aggregate functions.</div>
+      <div class="order-note">WHERE filters rows; HAVING filters groups</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">5</div>
+      <div class="order-clause">SELECT</div>
+      <div class="order-desc">Computes the output columns. Aliases are defined here for the first time.</div>
+      <div class="order-note">Aliases available from this step onward</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">6</div>
+      <div class="order-clause">ORDER BY</div>
+      <div class="order-desc">Sorts the output. The one place you can reference SELECT aliases by name.</div>
+      <div class="order-note">Can use SELECT aliases (they now exist)</div>
+    </div>
+    <div class="order-row">
+      <div class="order-step">7</div>
+      <div class="order-clause">LIMIT / OFFSET</div>
+      <div class="order-desc">Takes a slice of the sorted output. Applied last.</div>
+      <div class="order-note">Pagination happens after full sort</div>
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Classic mistake this catches</span>
+    <code>WHERE total &gt; 10</code> fails — <code>total</code> is a SELECT alias and doesn't exist at step 2. You need <code>HAVING COUNT(*) &gt; 10</code> instead. Understanding execution order explains exactly why.
+  </div>
+
+
+  <h2>JOINs — The Full Picture</h2>
+  <p>All JOINs combine rows from two tables. The differences are in what happens when there's no match.</p>
+
+  <div class="join-grid">
+    <div class="join-card">
+      <div class="join-card-name">INNER JOIN</div>
+      <div class="join-card-desc">Only rows where the condition matches in <em>both</em> tables.</div>
+      <pre style="margin:0;font-size:0.78rem"><code>SELECT a.id, u.name
+FROM applications a
+INNER JOIN users u ON a.user_id = u.id</code></pre>
+      <p style="margin-top:0.5rem;margin-bottom:0;font-size:0.82rem">Applications with no user record disappear. Users with no application disappear.</p>
+    </div>
+    <div class="join-card">
+      <div class="join-card-name">LEFT JOIN</div>
+      <div class="join-card-desc">All rows from left table, matching rows from right. NULLs if no match on right.</div>
+      <pre style="margin:0;font-size:0.78rem"><code>SELECT u.name, a.id
+FROM users u
+LEFT JOIN applications a ON a.user_id = u.id</code></pre>
+      <p style="margin-top:0.5rem;margin-bottom:0;font-size:0.82rem">All users returned. Users with no applications get NULL for application columns.</p>
+    </div>
+    <div class="join-card">
+      <div class="join-card-name">RIGHT JOIN</div>
+      <div class="join-card-desc">All rows from right table, matching from left. Rarely used — swap tables and use LEFT JOIN instead.</div>
+      <pre style="margin:0;font-size:0.78rem"><code>-- Equivalent to swapping tables in a LEFT JOIN
+SELECT u.name, a.id
+FROM applications a
+RIGHT JOIN users u ON a.user_id = u.id</code></pre>
+    </div>
+    <div class="join-card">
+      <div class="join-card-name">FULL OUTER JOIN</div>
+      <div class="join-card-desc">All rows from both tables. NULLs where no match exists on either side.</div>
+      <pre style="margin:0;font-size:0.78rem"><code>SELECT u.name, a.id
+FROM users u
+FULL OUTER JOIN applications a ON a.user_id = u.id</code></pre>
+      <p style="margin-top:0.5rem;margin-bottom:0;font-size:0.82rem">Use for reconciliation queries — find rows in either table that don't have a match.</p>
+    </div>
+  </div>
+
+  <h3>Self JOIN — query a table against itself</h3>
+  <pre><code>-- Find users referred by another user
+SELECT r.name AS referrer, u.name AS referred
+FROM   users u
+JOIN   users r ON u.referred_by = r.id;</code></pre>
+
+  <h3>CROSS JOIN — cartesian product</h3>
+  <pre><code>-- Every combination of plan and feature (e.g. pricing matrix)
+SELECT p.name, f.feature_name
+FROM   plans p
+CROSS JOIN features f;</code></pre>
+  <p>Returns M × N rows. Use deliberately — accidental cross joins are a common performance disaster.</p>
+
+  <h3>Finding unmatched rows — the anti-join pattern</h3>
+  <pre><code>-- Users who have never submitted an application
+SELECT u.id, u.name
+FROM   users u
+LEFT JOIN applications a ON a.user_id = u.id
+WHERE  a.id IS NULL;  -- NULL means no match was found on the right side</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT use case</span>
+    "Which users in tenant X have not completed their profile?" LEFT JOIN users to profiles, filter WHERE profiles.id IS NULL. This is cleaner and faster than a NOT IN subquery in almost all cases.
+  </div>
+
+
+  <h2>Aggregation</h2>
+  <p>Aggregation collapses multiple rows into one summary value. The core functions:</p>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>What it does</th><th>NULL handling</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>COUNT(*)</code></td><td>Counts all rows including NULLs</td><td>Counts NULL rows</td></tr>
+      <tr><td><code>COUNT(col)</code></td><td>Counts rows where col is NOT NULL</td><td>Ignores NULLs</td></tr>
+      <tr><td><code>COUNT(DISTINCT col)</code></td><td>Counts unique non-null values</td><td>Ignores NULLs</td></tr>
+      <tr><td><code>SUM(col)</code></td><td>Sum of values</td><td>Ignores NULLs</td></tr>
+      <tr><td><code>AVG(col)</code></td><td>Mean of values</td><td>Ignores NULLs — can skew averages</td></tr>
+      <tr><td><code>MIN(col)</code> / <code>MAX(col)</code></td><td>Smallest / largest value</td><td>Ignores NULLs</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code>-- Application stats per status for a tenant
+SELECT
+  status,
+  COUNT(*)                        AS total,
+  COUNT(DISTINCT user_id)         AS unique_users,
+  AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/3600) AS avg_hours_open
+FROM   applications
+WHERE  tenant_id = 'goat-001'
+GROUP BY status
+HAVING COUNT(*) > 5
+ORDER BY total DESC;</code></pre>
+
+
+  <h2>Subqueries</h2>
+
+  <h3>Non-correlated subquery — runs once</h3>
+  <pre><code>-- Users who applied to the same job as the most popular job
+SELECT DISTINCT user_id
+FROM   applications
+WHERE  job_id = (
+  SELECT job_id
+  FROM   applications
+  GROUP BY job_id
+  ORDER BY COUNT(*) DESC
+  LIMIT 1
+);</code></pre>
+  <p>The inner query runs once, returns a single value, and the outer query uses it. Independent of the outer query.</p>
+
+  <h3>Correlated subquery — runs once per row</h3>
+  <pre><code>-- Get each user's most recent application
+SELECT u.id, u.name,
+  (SELECT MAX(created_at)
+   FROM applications a
+   WHERE a.user_id = u.id) AS last_applied
+FROM users u;</code></pre>
+  <p>The inner query references <code>u.id</code> from the outer query. It re-executes for every row. <strong>Performance trap at scale</strong> — O(n × m). Use a JOIN or window function instead at production scale.</p>
+
+
+  <h2>CTEs — Common Table Expressions</h2>
+  <p>CTEs give a name to a subquery, making it readable and reusable within the same statement. The <code>WITH</code> clause.</p>
+
+  <pre><code>-- Active users in the last 30 days, then their application counts
+WITH active_users AS (
+  SELECT DISTINCT user_id
+  FROM   sessions
+  WHERE  created_at > NOW() - INTERVAL '30 days'
+    AND  tenant_id = 'goat-001'
+),
+user_app_counts AS (
+  SELECT user_id, COUNT(*) AS app_count
+  FROM   applications
+  WHERE  user_id IN (SELECT user_id FROM active_users)
+  GROUP BY user_id
+)
+SELECT u.name, uac.app_count
+FROM   users u
+JOIN   user_app_counts uac ON u.id = uac.user_id
+ORDER BY uac.app_count DESC;</code></pre>
+
+  <div class="callout warning">
+    <span class="callout-label">PostgreSQL 12 gotcha — the CTE optimization fence</span>
+    Before PostgreSQL 12, CTEs were <strong>always materialised</strong> — the inner query ran completely before the outer query could filter its results. This meant filters in the outer query couldn't push down into the CTE, sometimes causing full table scans. PostgreSQL 12+ inlines CTEs by default unless you write <code>WITH ... AS MATERIALIZED</code>. Know this — interviewers at companies running older Postgres will probe it.
+  </div>
+
+  <h3>Recursive CTEs</h3>
+  <pre><code>-- Walk an organisation hierarchy
+WITH RECURSIVE org_tree AS (
+  -- Anchor: start from CEO
+  SELECT id, name, manager_id, 0 AS level
+  FROM   employees
+  WHERE  manager_id IS NULL
+
+  UNION ALL
+
+  -- Recursive: join each employee to their manager
+  SELECT e.id, e.name, e.manager_id, ot.level + 1
+  FROM   employees e
+  JOIN   org_tree ot ON e.manager_id = ot.id
+)
+SELECT level, name FROM org_tree ORDER BY level, name;</code></pre>
+  <p>Pattern: anchor query (base case) + <code>UNION ALL</code> + recursive query that references the CTE itself. Essential for trees and graphs stored in relational tables.</p>
+
+
+  <h2>Window Functions — The Senior Differentiator</h2>
+  <p>Window functions compute a value across a set of rows related to the current row — without collapsing them into groups like GROUP BY does. Every row is preserved in the output. This is the feature that separates junior SQL from senior SQL.</p>
+
+  <pre><code>SELECT
+  user_id,
+  created_at,
+  status,
+  ROW_NUMBER()   OVER (PARTITION BY user_id ORDER BY created_at) AS application_number,
+  RANK()         OVER (PARTITION BY user_id ORDER BY score DESC) AS score_rank,
+  LAG(status, 1) OVER (PARTITION BY user_id ORDER BY created_at) AS prev_status,
+  SUM(1)         OVER (PARTITION BY user_id)                     AS total_for_user
+FROM applications
+WHERE tenant_id = 'goat-001';</code></pre>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>What it computes</th><th>When to use</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>ROW_NUMBER()</code></td>
+        <td>Sequential 1, 2, 3... per partition. No ties — always unique.</td>
+        <td>Get the Nth row per group. Deduplication.</td>
+      </tr>
+      <tr>
+        <td><code>RANK()</code></td>
+        <td>Rank with gaps: tied rows get same rank, next rank skips. 1,1,3,4.</td>
+        <td>Leaderboards where ties leave gaps.</td>
+      </tr>
+      <tr>
+        <td><code>DENSE_RANK()</code></td>
+        <td>Rank without gaps: 1,1,2,3.</td>
+        <td>Leaderboards where tied rows shouldn't skip the next rank.</td>
+      </tr>
+      <tr>
+        <td><code>LAG(col, n)</code></td>
+        <td>Value from N rows behind the current row in the window.</td>
+        <td>Compare current row to previous row (e.g. detect status changes).</td>
+      </tr>
+      <tr>
+        <td><code>LEAD(col, n)</code></td>
+        <td>Value from N rows ahead.</td>
+        <td>Look-ahead comparisons.</td>
+      </tr>
+      <tr>
+        <td><code>SUM / COUNT / AVG OVER ()</code></td>
+        <td>Running or partition-level aggregation without collapsing rows.</td>
+        <td>Running totals, per-group totals alongside detail rows.</td>
+      </tr>
+      <tr>
+        <td><code>NTILE(n)</code></td>
+        <td>Divides rows into n buckets (quartiles, deciles).</td>
+        <td>Score distribution bucketing.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Most common use: get the latest record per group</h3>
+  <pre><code>-- Latest application per user (without a subquery per user)
+WITH ranked AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS rn
+  FROM applications
+  WHERE tenant_id = 'goat-001'
+)
+SELECT * FROM ranked WHERE rn = 1;</code></pre>
+  <p>This is O(n log n) — one pass over the table. The correlated subquery equivalent is O(n²). At 1M rows the difference is enormous.</p>
+
+
+  <h2>Set Operations</h2>
+  <pre><code>-- UNION: combine results, remove duplicates
+SELECT user_id FROM active_users
+UNION
+SELECT user_id FROM premium_users;
+
+-- UNION ALL: combine results, keep duplicates (faster — no dedup step)
+SELECT user_id FROM active_users
+UNION ALL
+SELECT user_id FROM premium_users;
+
+-- INTERSECT: rows in both result sets
+SELECT user_id FROM active_users
+INTERSECT
+SELECT user_id FROM premium_users;
+
+-- EXCEPT: rows in first set but not second
+SELECT user_id FROM active_users
+EXCEPT
+SELECT user_id FROM premium_users;</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">UNION vs UNION ALL</span>
+    <code>UNION ALL</code> is always faster — no deduplication step. Use <code>UNION</code> only when you specifically need to remove duplicates. Many engineers default to <code>UNION</code> out of habit and pay an unnecessary sort cost.
+  </div>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Execution order</div>
+          <div class="playbook-q-text">"Why can't you use a SELECT alias in a WHERE clause?"</div>
+          <div class="playbook-q-probe">Follow-up: "Where CAN you use a SELECT alias? Why?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "SQL executes in logical order: FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY. The WHERE clause runs at step 2, before SELECT at step 5. Aliases are defined in the SELECT clause, so they simply don't exist when WHERE evaluates. This isn't a syntax limitation — it's a consequence of the evaluation order. The same reason you can't use a SELECT alias in GROUP BY or HAVING in most databases."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "ORDER BY — because it runs after SELECT (step 6 vs 5). That's the one place where SELECT aliases are valid. Some databases like MySQL and BigQuery also allow GROUP BY to reference SELECT aliases as an extension, but that's non-standard and can produce confusing results. PostgreSQL doesn't allow it in WHERE or HAVING, which is the correct behaviour."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — JOINs</div>
+          <div class="playbook-q-text">"Write a query to find all users who have NOT applied to any job."</div>
+          <div class="playbook-q-probe">Follow-up: "Compare LEFT JOIN + IS NULL vs NOT IN vs NOT EXISTS. Which is fastest?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            <code>SELECT u.id, u.name FROM users u LEFT JOIN applications a ON a.user_id = u.id WHERE a.id IS NULL;</code><br><br>
+            "LEFT JOIN brings back all users. When there's no matching application, the application columns are NULL. Filtering WHERE a.id IS NULL keeps only users with no applications — the anti-join pattern."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "LEFT JOIN + IS NULL and NOT EXISTS are equivalent in performance on modern PostgreSQL — the planner converts both into an anti-join internally. NOT IN is dangerous: if the subquery returns even one NULL value, the entire NOT IN condition returns NULL (due to SQL's three-valued logic), silently returning zero rows. This is a real production bug. I avoid NOT IN when the subquery can produce NULLs. My default is NOT EXISTS — it's semantically explicit and NULL-safe."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Window functions (senior signal)</div>
+          <div class="playbook-q-text">"For each user in applyGOAT, find their most recent application. Write the query two ways and explain the performance difference."</div>
+          <div class="playbook-q-probe">Follow-up: "What's PARTITION BY doing? What's the difference between ROW_NUMBER and RANK?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Correlated subquery approach (slow):<br>
+            <code>SELECT *, (SELECT MAX(created_at) FROM applications WHERE user_id = u.id) FROM users u</code><br>
+            This runs the inner query once per user — O(n × m), catastrophic at scale.<br><br>
+            Window function approach (fast):<br>
+            <code>WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS rn FROM applications) SELECT * FROM ranked WHERE rn = 1</code><br>
+            One pass over the table, O(n log n) for the sort within each partition. At 1M applications, this is the difference between seconds and milliseconds."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "PARTITION BY is like GROUP BY for the window — it says 'restart the computation for each unique value of this column.' OVER (PARTITION BY user_id ORDER BY created_at DESC) means: within each user's applications, number them starting from the most recent. The key difference from GROUP BY is that rows are NOT collapsed — every application row is in the output, just with an extra column.<br><br>
+            ROW_NUMBER vs RANK: if two applications have the same created_at timestamp, ROW_NUMBER assigns them 1 and 2 arbitrarily (non-deterministic for ties). RANK would assign both 1 and the next row gets 3 (gap). DENSE_RANK assigns both 1 and the next gets 2 (no gap). For 'get the latest single row per user' I use ROW_NUMBER — ties are rare and I just need one row."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q4 — CTEs vs subqueries</div>
+          <div class="playbook-q-text">"When would you use a CTE vs a subquery vs a temporary table?"</div>
+          <div class="playbook-q-probe">Follow-up: "What changed in PostgreSQL 12 about CTEs?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Subquery: use when the logic is simple and only referenced once. Inline and readable for one-shot use. CTE: use when a subquery is referenced more than once in the same query, or when the query has multiple logical steps that benefit from named, readable stages. Temp table: use when you need to materialise a large intermediate result, index it, and use it across multiple subsequent queries in a session — ANALYZE can even be run on it. CTEs are query-scoped; temp tables are session-scoped."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Before PostgreSQL 12, CTEs were always materialised — the planner treated the CTE as a 'black box' and couldn't push predicates from the outer query into it. If you filtered the CTE result outside with WHERE, that filter couldn't reduce work inside the CTE. This sometimes caused full table scans where index scans were possible. PostgreSQL 12 changed the default to inline CTEs (treating them like subqueries), allowing the planner to optimise across CTE boundaries. You can still force materialisation with <code>WITH x AS MATERIALIZED (...)</code> when you specifically want to prevent the CTE being evaluated multiple times."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Most candidates can write basic GROUP BY queries. The senior differentiator is window functions — specifically knowing when a correlated subquery can be replaced by a window function and why it matters for performance. If asked "how would you get the top N per group," the answer is ROW_NUMBER() OVER (PARTITION BY ...), not a subquery.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p><strong>PostgreSQL Documentation — Window Functions</strong><br>The authoritative reference. The "Window Function Calls" section explains PARTITION BY, ORDER BY, ROWS/RANGE frames.</p>
+  <p><strong>Use The Index, Luke — SQL Execution Order</strong><br>Covers logical vs physical execution order with concrete query examples. Free online.</p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Next:</strong> <a href="0005-query-execution.html">Lesson 05 — Query Execution &amp; the Planner</a> &nbsp;|&nbsp;
+    <a href="0002-database-indexing.html">Lesson 02 — Indexing (how results are fetched fast)</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Confused about when HAVING vs WHERE is correct? Want to see a window function applied to your applyGOAT schema specifically? Not sure about the CTE materialisation change in PostgreSQL 12?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 04 &nbsp;·&nbsp; SQL Fundamentals &amp; Query Anatomy &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "In what order does PostgreSQL logically evaluate these clauses: WHERE, SELECT, GROUP BY, FROM, HAVING?",
+    options: [
+      "SELECT → FROM → WHERE → GROUP BY → HAVING",
+      "FROM → WHERE → GROUP BY → HAVING → SELECT",
+      "FROM → GROUP BY → WHERE → SELECT → HAVING",
+      "WHERE → FROM → GROUP BY → SELECT → HAVING"
+    ],
+    answer: 1,
+    explanation: "FROM first (build the working set), then WHERE (filter rows), GROUP BY (group them), HAVING (filter groups), SELECT (compute output). This order explains why you can't use SELECT aliases in WHERE or HAVING — they don't exist yet at those steps."
+  },
+  {
+    q: "A query uses: SELECT COUNT(*) AS total ... HAVING total > 10. This will fail. Why?",
+    options: [
+      "COUNT(*) cannot be aliased",
+      "HAVING doesn't support aggregate functions",
+      "The alias 'total' doesn't exist when HAVING evaluates — it's defined later in SELECT",
+      "You need GROUP BY before HAVING can work"
+    ],
+    answer: 2,
+    explanation: "HAVING executes at step 4, SELECT at step 5. The alias 'total' is defined in SELECT and simply doesn't exist when HAVING runs. Use HAVING COUNT(*) > 10 instead — reference the aggregate function directly."
+  },
+  {
+    q: "Which JOIN returns all rows from the left table, with NULLs for non-matching rows from the right?",
+    options: ["INNER JOIN", "LEFT JOIN", "FULL OUTER JOIN", "CROSS JOIN"],
+    answer: 1,
+    explanation: "LEFT JOIN: all rows from the left table are returned. Where no matching row exists in the right table, the right table's columns are NULL. This is the basis of the anti-join pattern (filter WHERE right.id IS NULL to find unmatched rows)."
+  },
+  {
+    q: "What's the performance risk of a correlated subquery in the SELECT list (e.g. SELECT (SELECT MAX(x) FROM t WHERE t.id = outer.id))?",
+    options: [
+      "It causes a syntax error in PostgreSQL",
+      "It runs the inner query once per row of the outer query — O(n × m)",
+      "It cannot use indexes on the inner table",
+      "It prevents the outer query from using GROUP BY"
+    ],
+    answer: 1,
+    explanation: "A correlated subquery references columns from the outer query, so it must re-execute for every row the outer query produces. At 1M users, this is 1M inner queries. Replace with a JOIN or window function for O(n log n) instead."
+  },
+  {
+    q: "ROW_NUMBER(), RANK(), and DENSE_RANK() all produce different results when there are ties. For RANK() with values [10, 10, 8, 7], what ranks are assigned?",
+    options: [
+      "1, 2, 3, 4",
+      "1, 1, 2, 3",
+      "1, 1, 3, 4",
+      "1, 2, 2, 4"
+    ],
+    answer: 2,
+    explanation: "RANK() assigns the same rank to ties, then SKIPS the next rank. Both 10s get rank 1, then 8 gets rank 3 (skipping 2), 7 gets rank 4. DENSE_RANK() wouldn't skip: 1, 1, 2, 3. ROW_NUMBER() doesn't handle ties: 1, 2, 3, 4."
+  },
+  {
+    q: "NOT IN (SELECT user_id FROM applications) — what hidden danger does this have?",
+    options: [
+      "It's slower than EXISTS for large tables",
+      "If any row in the subquery is NULL, the entire NOT IN condition returns NULL, giving zero results",
+      "NOT IN cannot be used with subqueries — only with literal lists",
+      "It doesn't use indexes on the inner table"
+    ],
+    answer: 1,
+    explanation: "SQL uses three-valued logic (TRUE, FALSE, NULL). NOT IN with a NULL value in the subquery results in NULL comparisons, which propagate as UNKNOWN, making the WHERE clause return no rows at all. This is a silent production bug. Use NOT EXISTS instead — it's NULL-safe."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

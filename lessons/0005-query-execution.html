@@ -1,0 +1,496 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 05 — Query Execution & the Query Planner</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .pipeline-step {
+      display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1rem;
+      font-family: var(--font-ui);
+    }
+    .pipeline-num {
+      background: var(--accent); color: white; font-weight: 800;
+      font-size: 0.85rem; padding: 0.4rem 0.75rem; border-radius: 999px;
+      flex-shrink: 0; margin-top: 0.15rem;
+    }
+    .pipeline-content { flex: 1; }
+    .pipeline-title { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.2rem; }
+    .pipeline-desc { font-size: 0.86rem; color: var(--muted); line-height: 1.5; }
+
+    .scan-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin: 1.25rem 0; }
+    .scan-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.9rem; font-family: var(--font-ui); font-size: 0.84rem; }
+    .scan-name { font-weight: 700; font-size: 0.88rem; color: var(--accent); margin-bottom: 0.25rem; }
+    .scan-when { font-size: 0.8rem; color: var(--muted); }
+    @media (max-width: 640px) { .scan-grid { grid-template-columns: 1fr; } }
+
+    .explain-block {
+      background: var(--code-bg); color: var(--code-text);
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.7;
+      padding: 1.25rem 1.5rem; border-radius: 8px; overflow-x: auto;
+      margin-bottom: 1.25rem; white-space: pre;
+    }
+    .explain-annotation {
+      background: #2d2d44; border-left: 3px solid #f38ba8;
+      padding: 0.5rem 1rem; margin: -0.5rem 0 0.75rem 1.5rem;
+      font-family: var(--font-ui); font-size: 0.82rem; color: #f38ba8;
+      border-radius: 0 4px 4px 0;
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 05</div>
+    <div class="pillar-badge">Database Internals</div>
+    <h1 class="lesson-title">Query Execution<br>&amp; the Query Planner</h1>
+    <p class="lesson-subtitle">What happens between typing a SQL query and receiving a result — and how to read the plan that decides it.</p>
+  </header>
+
+  <h2>The Query Lifecycle</h2>
+  <p>A SQL string goes through four distinct stages before any data is touched. Understanding this pipeline is how you diagnose slow queries and know which tool to reach for.</p>
+
+  <div class="pipeline-step">
+    <div class="pipeline-num">1</div>
+    <div class="pipeline-content">
+      <div class="pipeline-title">Parse</div>
+      <div class="pipeline-desc">The SQL string is tokenised and checked for syntax. If valid, it becomes a parse tree (abstract syntax tree). Errors here are syntax errors — column names and types aren't validated yet.</div>
+    </div>
+  </div>
+
+  <div class="pipeline-step">
+    <div class="pipeline-num">2</div>
+    <div class="pipeline-content">
+      <div class="pipeline-title">Analyse / Rewrite</div>
+      <div class="pipeline-desc">PostgreSQL validates the parse tree against the catalog — checking that tables and columns actually exist, resolving types, and expanding views. Views are rewritten into their underlying queries here. Output: a query tree with resolved references.</div>
+    </div>
+  </div>
+
+  <div class="pipeline-step">
+    <div class="pipeline-num">3</div>
+    <div class="pipeline-content">
+      <div class="pipeline-title">Plan (the interesting one)</div>
+      <div class="pipeline-desc">The query planner (also called the query optimiser) generates multiple ways to execute the query, estimates the cost of each, and picks the cheapest. It uses table statistics (row counts, value distributions) and knowledge of available indexes. Output: an execution plan — a tree of plan nodes.</div>
+    </div>
+  </div>
+
+  <div class="pipeline-step">
+    <div class="pipeline-num">4</div>
+    <div class="pipeline-content">
+      <div class="pipeline-title">Execute</div>
+      <div class="pipeline-desc">The executor walks the plan tree. Each node pulls rows from its child nodes (a pipeline model called the Volcano / Iterator model). Data flows upward through filter, sort, join, and aggregate nodes until results reach the client.</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">The key insight</span>
+    You can't influence parsing or execution — those are fixed. Everything that matters for performance happens in the <strong>Plan</strong> step. Your indexes, table statistics, query shape, and join order all feed the planner's decision. When a query is slow, the question is always: "What did the planner choose and why?"
+  </div>
+
+
+  <h2>How the Planner Estimates Costs</h2>
+  <p>The planner doesn't run the query to find the fastest plan. It uses statistics stored in <code>pg_statistic</code> (exposed via <code>pg_stats</code>) to estimate the cost of each plan without executing it.</p>
+
+  <h3>Key statistics the planner uses</h3>
+  <table>
+    <thead>
+      <tr><th>Statistic</th><th>What it tells the planner</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>n_distinct</code></td>
+        <td>Number of unique values in a column. Low = low selectivity (e.g. boolean). High = highly selective (e.g. user_id).</td>
+        <td><code>pg_stats.n_distinct</code></td>
+      </tr>
+      <tr>
+        <td><code>most_common_vals</code></td>
+        <td>Most frequent values and their frequencies. Used to estimate how many rows a WHERE filter will return.</td>
+        <td><code>pg_stats.most_common_vals</code></td>
+      </tr>
+      <tr>
+        <td><code>histogram_bounds</code></td>
+        <td>Distribution of values across ranges. Used for range query selectivity estimation.</td>
+        <td><code>pg_stats.histogram_bounds</code></td>
+      </tr>
+      <tr>
+        <td><code>reltuples</code></td>
+        <td>Estimated number of rows in the table.</td>
+        <td><code>pg_class.reltuples</code></td>
+      </tr>
+      <tr>
+        <td><code>relpages</code></td>
+        <td>Number of disk pages the table occupies. Drives sequential scan cost.</td>
+        <td><code>pg_class.relpages</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Statistics are collected by the <strong>ANALYZE</strong> command (runs automatically via autovacuum). Stale statistics cause the planner to make wrong choices — often choosing a sequential scan over an index scan because it underestimates how many rows the filter will eliminate.</p>
+
+  <pre><code>-- Manually refresh statistics on a table after large bulk loads
+ANALYZE applications;
+
+-- View the statistics for a specific column
+SELECT * FROM pg_stats WHERE tablename = 'applications' AND attname = 'status';</code></pre>
+
+
+  <h2>Scan Strategies</h2>
+  <p>The planner's first decision per table: how to access the rows. Three main strategies.</p>
+
+  <div class="scan-grid">
+    <div class="scan-card">
+      <div class="scan-name">Sequential Scan</div>
+      Reads every page in the table from start to finish. Best when fetching a large fraction of the table (no index would help). I/O is sequential — fast on SSDs.
+      <div class="scan-when">Chosen when: no useful index, or filter returns &gt;~5–20% of rows.</div>
+    </div>
+    <div class="scan-card">
+      <div class="scan-name">Index Scan</div>
+      Walks the B-tree index to find matching rows, then fetches each row from the heap (the actual table). Each row lookup is a random I/O.
+      <div class="scan-when">Chosen when: highly selective filter, small fraction of rows returned.</div>
+    </div>
+    <div class="scan-card">
+      <div class="scan-name">Bitmap Index Scan</div>
+      Two-pass: first, collects all heap page locations from the index into a bitmap. Second, reads those pages in physical order — converting random I/O into sequential. Used when the index is moderately selective (too many rows for an index scan, too few for a sequential scan).
+      <div class="scan-when">Chosen when: medium selectivity. Also used to combine multiple indexes (Bitmap AND/OR).</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Index-only scan</span>
+    A fourth strategy: when all columns needed by a query are included in the index itself (a <strong>covering index</strong>), PostgreSQL never touches the heap at all. This is the fastest possible read — memory access to index pages only. More on this in Lesson 06.
+  </div>
+
+  <h3>Why a small table uses a sequential scan even with an index</h3>
+  <p>The planner compares costs. For a 100-row table, reading all 100 rows sequentially (maybe one page of I/O) is cheaper than walking the B-tree (multiple index page reads) + fetching heap rows. The index adds overhead. The planner knows this and chooses the sequential scan correctly.</p>
+
+
+  <h2>Join Strategies</h2>
+  <p>When joining two tables, the planner picks one of three algorithms.</p>
+
+  <table>
+    <thead>
+      <tr><th>Strategy</th><th>How it works</th><th>Best for</th><th>Cost</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Nested Loop</strong></td>
+        <td>For each row in the outer table, scan the inner table (using an index if available). Like two for-loops.</td>
+        <td>Small outer table + indexed inner table. LIMIT queries.</td>
+        <td>O(n × m) worst case. O(n × log m) with index.</td>
+      </tr>
+      <tr>
+        <td><strong>Hash Join</strong></td>
+        <td>Build a hash table from the smaller table. Probe it for each row from the larger table.</td>
+        <td>Large unsorted joins where no index exists. Equi-joins.</td>
+        <td>O(n + m). Requires memory for the hash table.</td>
+      </tr>
+      <tr>
+        <td><strong>Merge Join</strong></td>
+        <td>Both tables must be sorted on the join key. Merge them in one pass like merge-sort.</td>
+        <td>Both sides already sorted (by index or ORDER BY). Range joins.</td>
+        <td>O(n log n + m log m) for sort. O(n + m) if pre-sorted.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Hash join memory warning</span>
+    Hash joins build an in-memory hash table from the smaller relation. If it exceeds <code>work_mem</code> (default 4MB in PostgreSQL), it spills to disk — dramatically slower. For large analytical joins, increasing <code>work_mem</code> for the session can change a 30-second query into a 2-second one.
+    <br><code>SET work_mem = '256MB';</code> — set per-session, not globally, to avoid OOM.
+  </div>
+
+
+  <h2>Reading EXPLAIN ANALYZE</h2>
+  <p><code>EXPLAIN</code> shows the plan the planner chose. <code>EXPLAIN ANALYZE</code> actually runs the query and shows real execution times. Always use ANALYZE to diagnose slow queries — estimated costs and actual costs can differ significantly.</p>
+
+  <pre><code>EXPLAIN ANALYZE
+SELECT a.id, u.name, a.status
+FROM   applications a
+JOIN   users u ON a.user_id = u.id
+WHERE  a.tenant_id = 'goat-001'
+  AND  a.created_at > '2024-01-01'
+ORDER BY a.created_at DESC
+LIMIT 20;</code></pre>
+
+  <div class="explain-block">Hash Join  (cost=145.20..892.45 rows=20 width=52)
+             (actual time=3.421..18.234 rows=20 loops=1)
+  Hash Cond: (a.user_id = u.id)
+  ->  Index Scan using idx_apps_tenant_date on applications a
+        (cost=0.56..712.33 rows=2847 width=44)
+        (actual time=0.082..14.113 rows=2847 loops=1)
+        Index Cond: (tenant_id = 'goat-001')
+        Filter: (created_at > '2024-01-01')
+        Rows Removed by Filter: 153
+  ->  Hash  (cost=89.20..89.20 rows=4400 width=16)
+             (actual time=2.891..2.891 rows=4400 loops=1)
+        Buckets: 8192  Batches: 1  Memory Usage: 238kB
+        ->  Seq Scan on users u
+              (cost=0.00..89.20 rows=4400 width=16)
+              (actual time=0.012..1.203 rows=4400 loops=1)
+Planning Time: 0.834 ms
+Execution Time: 18.451 ms</div>
+
+  <h3>How to read a plan — bottom up</h3>
+  <p>The plan is a tree. Data flows from the leaves upward. Read it from the most-indented lines outward.</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>What it means</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>cost=0.56..712.33</code></td>
+        <td>Estimated cost: startup cost .. total cost. Units are arbitrary (related to disk page reads). Lower is better.</td>
+      </tr>
+      <tr>
+        <td><code>rows=2847</code></td>
+        <td>Estimated number of rows this node will output. Compare to actual rows to spot planner miscalibration.</td>
+      </tr>
+      <tr>
+        <td><code>actual time=0.082..14.113</code></td>
+        <td>Actual milliseconds: time to first row .. time to last row. Only with ANALYZE.</td>
+      </tr>
+      <tr>
+        <td><code>loops=1</code></td>
+        <td>How many times this node was executed. In nested loops, the inner node may loop many times.</td>
+      </tr>
+      <tr>
+        <td><code>Rows Removed by Filter: 153</code></td>
+        <td>Rows read from the index but rejected by a secondary filter. High numbers here mean the index isn't as selective as ideal.</td>
+      </tr>
+      <tr>
+        <td><code>Batches: 1</code> vs <code>Batches: N</code></td>
+        <td>Hash join batches. Batches &gt; 1 means the hash table spilled to disk. Performance problem — increase work_mem.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Red flags in an EXPLAIN ANALYZE output</h3>
+  <ul>
+    <li><strong>Estimated rows ≪ actual rows:</strong> Stale statistics. Run <code>ANALYZE</code> on the table. The planner made its choice based on wrong data.</li>
+    <li><strong>Seq Scan on a large table:</strong> Either no index exists, the index isn't being used (check column types, function wrapping), or the query is returning too large a fraction of rows.</li>
+    <li><strong>Hash Batches &gt; 1:</strong> Hash table spilled to disk. Increase <code>work_mem</code> for the session.</li>
+    <li><strong>loops=N with high actual time per loop:</strong> Nested loop with a non-indexed inner scan. Add an index on the join key of the inner table.</li>
+    <li><strong>Sort node with large actual time:</strong> External sort (spilled to disk). Increase <code>work_mem</code> or provide the data pre-sorted via an index.</li>
+  </ul>
+
+
+  <h2>pg_stat_statements — Production Query Monitoring</h2>
+  <p>The <code>pg_stat_statements</code> extension tracks cumulative statistics for every query shape executed on the server. This is the tool for finding slow queries in production without looking at individual EXPLAIN outputs.</p>
+
+  <pre><code>-- Enable in postgresql.conf:
+-- shared_preload_libraries = 'pg_stat_statements'
+
+-- Find the top 10 slowest queries by total time spent
+SELECT
+  LEFT(query, 80)          AS query_preview,
+  calls,
+  total_exec_time::int     AS total_ms,
+  mean_exec_time::int      AS avg_ms,
+  (total_exec_time / calls)::int AS avg_ms_check,
+  rows
+FROM   pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;</code></pre>
+
+  <p>This shows you where the database is actually spending time across all requests — not just the queries you happen to EXPLAIN. The highest <code>total_exec_time</code> entries are your optimisation targets regardless of per-call latency.</p>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT workflow</span>
+    Enable pg_stat_statements on your PostgreSQL instance. After a day of traffic, query it to find the top 10 by total_exec_time. Those are your real slow queries — often a surprise compared to what you expected. Then EXPLAIN ANALYZE the top ones to diagnose.
+  </div>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Fundamentals</div>
+          <div class="playbook-q-text">"A query is slow. Walk me through how you'd diagnose it."</div>
+          <div class="playbook-q-probe">Follow-up: "What's the difference between EXPLAIN and EXPLAIN ANALYZE?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "First, identify the query — in production I'd use pg_stat_statements to find the highest total_exec_time queries rather than guessing. Then run EXPLAIN ANALYZE on the specific query to see the actual execution plan. I look at: (1) are there sequential scans on large tables where an index should exist, (2) are estimated rows close to actual rows — if not, statistics are stale and ANALYZE needs to run, (3) are hash joins spilling to disk (Batches &gt; 1), (4) are nested loops executing the inner node many times without an index. Once I know the bottleneck, the fix is usually one of: add an index, rewrite the query shape, update statistics, or increase work_mem for a session."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "EXPLAIN shows the plan the planner <em>intends</em> to use — estimated costs, estimated row counts, plan nodes. It does not execute the query. EXPLAIN ANALYZE actually runs the query and augments the plan output with actual execution times, actual row counts, and loop counts. Always use ANALYZE when diagnosing a slow query — the estimated costs can be wildly wrong when statistics are stale, and you need the actual numbers to know what's really happening. The only reason to use plain EXPLAIN is when the query is too expensive to run (e.g. a destructive UPDATE you only want to plan, not execute)."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Planner internals</div>
+          <div class="playbook-q-text">"You added an index but the query planner isn't using it. Why might that happen?"</div>
+          <div class="playbook-q-probe">Follow-up: "Can you force the planner to use an index? Should you?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Several reasons: (1) The query returns too large a fraction of rows — the planner correctly decides a sequential scan is cheaper than many random index reads. (2) The column is wrapped in a function — <code>WHERE LOWER(email) = ?</code> prevents the index on <code>email</code> from being used because the function transforms the value before comparison. (3) Implicit type coercion — if <code>user_id</code> is a UUID and you pass a string, the planner can't use the index without a cast. (4) Stale statistics — the planner underestimates selectivity and thinks the index isn't worth it. Fix: run ANALYZE. (5) The index doesn't match the query's column order (composite index left-prefix rule)."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "You can hint the planner by disabling specific scan types for debugging: <code>SET enable_seqscan = off</code>. This forces the planner away from sequential scans so you can verify the index works. But you should never leave this in production — it overrides the planner's cost calculations globally and can make other queries much worse. The right fix is to understand why the planner chose the sequential scan and either fix the query, update statistics, or accept that the planner is correct and the sequential scan genuinely is faster for that query."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Join strategy</div>
+          <div class="playbook-q-text">"When would a hash join be faster than a nested loop join? When would it be slower?"</div>
+          <div class="playbook-q-probe">Follow-up: "What happens when the hash table doesn't fit in memory?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Hash join is faster when: joining two large tables without useful indexes on the join key, or when the inner table would need many random reads in a nested loop. It builds a hash table from the smaller relation (O(n)) then probes it for each outer row (O(m)) — total O(n+m). Nested loop is faster when: the outer table is very small and the inner table has an index on the join key — each inner lookup is O(log m) and the number of loops is small. Also, nested loops can return the first row quickly (useful for LIMIT queries), while hash join must build the full hash table before returning any results."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "When the hash table exceeds work_mem, PostgreSQL spills it to disk in 'batches' — you'll see 'Batches: N' in EXPLAIN ANALYZE. Each batch requires an extra I/O pass over the data. A hash join that fits in memory (Batches: 1) is fast. The same join with Batches: 8 can be 10–20× slower. The fix is increasing work_mem for that session: SET work_mem = '256MB'. Don't increase it globally unless you have enough RAM — each sort or hash node in a query plan can use up to work_mem, and a complex query with multiple joins can multiply that."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Most candidates say "run EXPLAIN and add an index." Senior answer: explain what the planner does with statistics, how to read actual vs estimated row counts to detect stale stats, what each scan and join strategy means, and when an index won't be used even if it exists. The planner is not a black box — know how it thinks.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0004-sql-fundamentals.html">Lesson 04 — SQL Fundamentals</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0006-query-optimization.html">Lesson 06 — Query Optimization</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to walk through an EXPLAIN ANALYZE output from applyGOAT together? Not sure why the planner chose a sequential scan on a table you just indexed? Confused about work_mem and when to increase it?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 05 &nbsp;·&nbsp; Query Execution &amp; the Planner &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "In what order do the four phases of query execution run in PostgreSQL?",
+    options: [
+      "Plan → Parse → Analyse → Execute",
+      "Parse → Analyse/Rewrite → Plan → Execute",
+      "Analyse → Parse → Execute → Plan",
+      "Parse → Plan → Execute → Analyse"
+    ],
+    answer: 1,
+    explanation: "Parse (syntax check → AST) → Analyse/Rewrite (validate against catalog, expand views) → Plan (choose execution strategy using statistics) → Execute (run the plan, fetch data). Everything interesting for performance happens in Plan."
+  },
+  {
+    q: "EXPLAIN ANALYZE shows 'actual rows=15000' but 'rows=45 (estimated)'. What's the most likely cause and fix?",
+    options: [
+      "The index is corrupt — rebuild it with REINDEX",
+      "The query has a syntax error in the WHERE clause",
+      "Statistics are stale — the planner underestimated selectivity. Fix: run ANALYZE on the table.",
+      "work_mem is too low — increase it to fix estimation errors"
+    ],
+    answer: 2,
+    explanation: "When estimated rows are far below actual rows, the planner's statistics are stale. It made its access path decision (likely index scan expecting 45 rows) based on wrong data. Running ANALYZE refreshes statistics so the planner gets accurate selectivity estimates. This is one of the most common causes of unexpectedly slow queries."
+  },
+  {
+    q: "A hash join shows 'Batches: 8' in EXPLAIN ANALYZE. What does this mean and what's the fix?",
+    options: [
+      "The join ran 8 times for correctness verification — normal behaviour",
+      "The hash table spilled to disk across 8 batches because it exceeded work_mem. Fix: increase work_mem for the session.",
+      "The planner found 8 equally good plans and chose randomly",
+      "8 parallel workers were used for the join — increase max_parallel_workers to improve it"
+    ],
+    answer: 1,
+    explanation: "Batches > 1 means the hash table didn't fit in work_mem and spilled to disk. Each batch requires an extra I/O pass over the data, causing major slowdown. Fix: SET work_mem = '256MB' for the session. Don't increase it globally without checking your server's RAM."
+  },
+  {
+    q: "Which scan type does PostgreSQL use when it needs to combine results from two indexes on the same table?",
+    options: [
+      "Multi-Index Scan",
+      "Parallel Seq Scan",
+      "Bitmap Index Scan with Bitmap AND/OR",
+      "Index-Only Scan with predicate pushdown"
+    ],
+    answer: 2,
+    explanation: "Bitmap Index Scans can be combined with Bitmap AND / Bitmap OR operators. Each index produces a bitmap of matching heap page locations, then the bitmaps are combined before fetching pages. This allows using multiple partial indexes together — e.g. WHERE status = 'open' AND created_at > '2024-01-01' using two separate indexes."
+  },
+  {
+    q: "You run pg_stat_statements and find a query with calls=10, avg_ms=500, but another with calls=10000, avg_ms=2. Which do you optimize first?",
+    options: [
+      "The first — 500ms per call is very slow",
+      "The second — 10,000 calls means more users are affected",
+      "The second — total_exec_time = 20,000ms vs 5,000ms, so it consumes more database time overall",
+      "Both equally — calls and avg_ms are equally important"
+    ],
+    answer: 2,
+    explanation: "Optimize by total_exec_time first. Query 1: 10 × 500ms = 5,000ms total. Query 2: 10,000 × 2ms = 20,000ms total. Query 2 burns 4× more database time, even though it feels fast per call. pg_stat_statements ordered by total_exec_time shows you the actual resource consumers, not just the slow-feeling ones."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

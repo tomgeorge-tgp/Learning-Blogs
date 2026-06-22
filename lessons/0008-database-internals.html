@@ -1,0 +1,528 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 08 — Database Internals</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .isolation-table th, .isolation-table td { text-align: center; }
+    .isolation-table td:first-child { text-align: left; font-weight: 700; }
+    .yes { color: var(--danger); font-weight: 700; }
+    .no  { color: var(--success); font-weight: 700; }
+    .maybe { color: var(--warning); font-weight: 600; }
+
+    .mvcc-diagram {
+      background: var(--code-bg); color: var(--code-text);
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.8;
+      padding: 1.25rem 1.5rem; border-radius: 8px; overflow-x: auto;
+      margin-bottom: 1.25rem; white-space: pre;
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 08</div>
+    <div class="pillar-badge">Database Internals</div>
+    <h1 class="lesson-title">Database Internals</h1>
+    <p class="lesson-subtitle">MVCC, WAL, VACUUM, isolation levels — how PostgreSQL actually guarantees the ACID properties your application relies on.</p>
+  </header>
+
+  <h2>ACID — The Contract</h2>
+  <p>Every relational database transaction comes with four guarantees. These are not abstract — each is implemented by specific internal mechanisms.</p>
+
+  <table>
+    <thead>
+      <tr><th>Property</th><th>Guarantee</th><th>Implemented by</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Atomicity</strong></td>
+        <td>A transaction either fully commits or fully rolls back. No partial writes.</td>
+        <td>WAL: if the database crashes mid-transaction, the WAL allows rollback on recovery.</td>
+      </tr>
+      <tr>
+        <td><strong>Consistency</strong></td>
+        <td>A transaction moves the database from one valid state to another, respecting all constraints.</td>
+        <td>Constraint checking (FK, UNIQUE, CHECK) before commit. Triggers.</td>
+      </tr>
+      <tr>
+        <td><strong>Isolation</strong></td>
+        <td>Concurrent transactions don't interfere with each other in unintended ways.</td>
+        <td>MVCC (Multi-Version Concurrency Control). Locks for write-write conflicts.</td>
+      </tr>
+      <tr>
+        <td><strong>Durability</strong></td>
+        <td>A committed transaction survives crashes. Data is permanently stored.</td>
+        <td>WAL: the write is flushed to the WAL before the commit is acknowledged.</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <h2>MVCC — How PostgreSQL Handles Concurrent Reads and Writes</h2>
+  <p>The key design decision in PostgreSQL's concurrency model: <strong>readers never block writers and writers never block readers.</strong> This is achieved through Multi-Version Concurrency Control (MVCC).</p>
+
+  <h3>How it works</h3>
+  <p>PostgreSQL never overwrites a row in place. When you UPDATE a row, it:</p>
+  <ol>
+    <li>Marks the old row version as <em>dead</em> (sets its <code>xmax</code> — the transaction ID that expired it)</li>
+    <li>Inserts a new row version with the updated values (new <code>xmin</code> — the transaction ID that created it)</li>
+  </ol>
+
+  <div class="mvcc-diagram">Time ──────────────────────────────────────────►
+
+TXN 100 starts: SELECT * FROM users WHERE id = 1
+TXN 101 starts: UPDATE users SET name = 'Thomas' WHERE id = 1
+
+Heap page for users(id=1):
+
+  Version A: xmin=50, xmax=101, name='Tom'
+             ↑ visible to TXN 100 (started before 101 committed)
+             ↑ NOT visible to new transactions after 101 commits
+
+  Version B: xmin=101, xmax=∞, name='Thomas'
+             ↑ NOT visible to TXN 100 (started before 101)
+             ↑ visible to all new transactions after 101 commits
+
+TXN 100: still reads 'Tom' (consistent snapshot)
+TXN 101: commits → new transactions read 'Thomas'
+TXN 100: reads 'Tom' until it commits or rolls back</div>
+
+  <p>Each transaction sees a consistent snapshot of the database as it was at its start time (or at the start of each statement, depending on isolation level). Dead row versions accumulate until VACUUM reclaims them.</p>
+
+  <div class="callout">
+    <span class="callout-label">Why this matters for your app</span>
+    Long-running transactions in applyGOAT (e.g. a data export that takes 5 minutes) hold a snapshot. All the row versions that were visible when it started are kept alive — even if newer transactions have replaced them. This causes <strong>table bloat</strong>. Keep transactions short. Don't hold transactions open across HTTP requests or AI generation calls.
+  </div>
+
+
+  <h2>WAL — Write-Ahead Log (Durability + Replication)</h2>
+  <p>The WAL is the mechanism behind both Atomicity and Durability. The rule is simple: <strong>write to the WAL before writing to the actual data files.</strong></p>
+
+  <p>Every data change (INSERT, UPDATE, DELETE) produces a WAL record describing the change. This is flushed to disk (fsync) before the commit is acknowledged to the client. If the server crashes after a commit but before the heap files are written, the WAL records allow full recovery on restart.</p>
+
+  <h3>WAL and replication</h3>
+  <p>Read replicas work by tailing the WAL stream from the primary. The replica applies the same WAL records in order, keeping its state in sync. This is covered in depth in Lesson 03 (Database Scaling).</p>
+
+  <pre><code>-- Check current WAL position
+SELECT pg_current_wal_lsn();  -- Log Sequence Number
+
+-- Check how far a replica is behind
+SELECT
+  application_name,
+  state,
+  sent_lsn,
+  write_lsn,
+  flush_lsn,
+  replay_lsn,
+  (sent_lsn - replay_lsn) AS replication_lag_bytes
+FROM pg_stat_replication;</code></pre>
+
+
+  <h2>Transaction Isolation Levels</h2>
+  <p>Isolation is not binary. PostgreSQL supports four isolation levels, each permitting or preventing specific <em>read phenomena</em>. The higher the isolation, the fewer anomalies — but more lock contention and potential performance cost.</p>
+
+  <h3>The three read phenomena</h3>
+  <table>
+    <thead>
+      <tr><th>Phenomenon</th><th>What happens</th><th>Example</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Dirty Read</strong></td>
+        <td>Read uncommitted data from another transaction that hasn't committed yet (may still roll back).</td>
+        <td>TXN A reads a balance updated by TXN B. TXN B rolls back. TXN A saw data that never existed.</td>
+      </tr>
+      <tr>
+        <td><strong>Non-Repeatable Read</strong></td>
+        <td>Read the same row twice in a transaction, get different values because another transaction committed between the reads.</td>
+        <td>TXN A reads user plan = 'free'. TXN B upgrades user to 'premium' and commits. TXN A reads again: 'premium'. Same row, different value in same transaction.</td>
+      </tr>
+      <tr>
+        <td><strong>Phantom Read</strong></td>
+        <td>Run the same query twice in a transaction, get different sets of rows because another transaction inserted or deleted rows between the reads.</td>
+        <td>TXN A: SELECT COUNT(*) = 10. TXN B inserts a row and commits. TXN A: SELECT COUNT(*) = 11. New row "appeared."</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Isolation levels and the phenomena they prevent</h3>
+  <table class="isolation-table">
+    <thead>
+      <tr><th>Isolation Level</th><th>Dirty Read</th><th>Non-Repeatable Read</th><th>Phantom Read</th><th>PostgreSQL default?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>READ UNCOMMITTED</td>
+        <td class="yes">Possible</td>
+        <td class="yes">Possible</td>
+        <td class="yes">Possible</td>
+        <td>No (PostgreSQL treats it as READ COMMITTED)</td>
+      </tr>
+      <tr>
+        <td>READ COMMITTED</td>
+        <td class="no">Prevented</td>
+        <td class="yes">Possible</td>
+        <td class="yes">Possible</td>
+        <td><strong>Yes — the default</strong></td>
+      </tr>
+      <tr>
+        <td>REPEATABLE READ</td>
+        <td class="no">Prevented</td>
+        <td class="no">Prevented</td>
+        <td class="maybe">Prevented*</td>
+        <td>No — opt in</td>
+      </tr>
+      <tr>
+        <td>SERIALIZABLE</td>
+        <td class="no">Prevented</td>
+        <td class="no">Prevented</td>
+        <td class="no">Prevented</td>
+        <td>No — opt in</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-family:var(--font-ui);font-size:0.8rem;color:var(--muted)">* PostgreSQL's MVCC implementation prevents phantom reads at REPEATABLE READ — stronger than the SQL standard requires.</p>
+
+  <pre><code>-- Set isolation level for a specific transaction
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+-- ... your queries
+COMMIT;
+
+-- Or per session
+SET default_transaction_isolation = 'repeatable read';</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">READ COMMITTED is PostgreSQL's default — what it means for you</span>
+    At READ COMMITTED, each statement in a transaction sees a fresh snapshot of committed data at the moment <em>that statement</em> starts. This means if TXN B commits between two SELECT statements in your TXN A, you'll see TXN B's changes in the second SELECT. For most applyGOAT operations this is fine. For financial operations (balance checks + deductions), use REPEATABLE READ or SERIALIZABLE plus <code>SELECT FOR UPDATE</code>.
+  </div>
+
+
+  <h2>Locks</h2>
+  <p>MVCC handles read-write conflicts without locks. Write-write conflicts still need locking.</p>
+
+  <h3>Row-level locks</h3>
+  <pre><code>-- Lock a row for update — prevents other transactions from modifying it
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;
+-- Other transactions trying to UPDATE this row will wait here
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+COMMIT;</code></pre>
+
+  <p><code>FOR UPDATE</code> is the standard pattern for "read-then-update" operations where correctness depends on the value you read still being current when you write. Without it, two concurrent transactions could both read the same balance and each subtract from it, resulting in a total subtraction of only one of the amounts.</p>
+
+  <h3>FOR UPDATE vs FOR SHARE</h3>
+  <table>
+    <thead>
+      <tr><th>Lock type</th><th>Blocks</th><th>Allows</th><th>Use case</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>FOR UPDATE</code></td>
+        <td>Other writers, other FOR UPDATE/SHARE</td>
+        <td>Reads (MVCC)</td>
+        <td>You intend to update the row</td>
+      </tr>
+      <tr>
+        <td><code>FOR SHARE</code></td>
+        <td>Writers</td>
+        <td>Other FOR SHARE readers</td>
+        <td>You need the row to not change while you validate it (FK checks)</td>
+      </tr>
+      <tr>
+        <td><code>FOR NO KEY UPDATE</code></td>
+        <td>Writers, FOR UPDATE/SHARE</td>
+        <td>FOR NO KEY UPDATE from others</td>
+        <td>Update a row without affecting FK referencing rows</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Advisory locks</h3>
+  <pre><code>-- Application-level locks using PostgreSQL as the coordinator
+-- Useful for preventing duplicate processing of the same job
+
+SELECT pg_try_advisory_lock(12345);  -- non-blocking: returns true/false
+SELECT pg_advisory_lock(12345);      -- blocking: waits until lock available
+SELECT pg_advisory_unlock(12345);    -- release
+
+-- Example: ensure only one worker processes a specific job
+async def process_job(job_id: int):
+    lock_acquired = await db.fetchval(
+        "SELECT pg_try_advisory_lock($1)", job_id
+    )
+    if not lock_acquired:
+        return  # another worker is handling it
+    try:
+        await do_work(job_id)
+    finally:
+        await db.execute("SELECT pg_advisory_unlock($1)", job_id)</code></pre>
+
+  <h3>Deadlocks</h3>
+  <p>A deadlock occurs when TXN A holds a lock TXN B needs, and TXN B holds a lock TXN A needs. Both wait forever. PostgreSQL detects deadlocks automatically and kills one transaction with an error.</p>
+
+  <pre><code>-- Classic deadlock pattern
+TXN A: UPDATE accounts SET balance = balance - 100 WHERE id = 1;  -- locks row 1
+TXN B: UPDATE accounts SET balance = balance - 50  WHERE id = 2;  -- locks row 2
+TXN A: UPDATE accounts SET balance = balance + 100 WHERE id = 2;  -- waits for B
+TXN B: UPDATE accounts SET balance = balance + 50  WHERE id = 1;  -- waits for A → DEADLOCK
+
+-- Prevention: always lock resources in the same order
+-- Both transactions should lock row 1 before row 2</code></pre>
+
+  <div class="callout warning">
+    <span class="callout-label">Deadlock in FastAPI</span>
+    If your FastAPI endpoints run multiple UPDATEs in a transaction, ensure any endpoint that updates multiple rows always touches them in the same order (e.g. always by ascending user_id). This is the standard deadlock prevention technique for application code.
+  </div>
+
+
+  <h2>VACUUM and Table Bloat</h2>
+  <p>MVCC creates dead row versions on every UPDATE and DELETE. These dead tuples take up space and slow down sequential scans (the scanner must check each tuple's visibility). VACUUM reclaims this space.</p>
+
+  <h3>Autovacuum</h3>
+  <p>PostgreSQL runs autovacuum automatically in the background. For most tables this is sufficient. Problems arise when:</p>
+  <ul>
+    <li><strong>Very high write/update rate:</strong> autovacuum can't keep up, bloat grows faster than it's reclaimed.</li>
+    <li><strong>Long-running transactions:</strong> autovacuum cannot reclaim dead tuples that are still visible to the oldest running transaction.</li>
+    <li><strong>Large bulk updates:</strong> updating millions of rows creates millions of dead tuples at once — autovacuum may lag for hours.</li>
+  </ul>
+
+  <pre><code>-- Check table bloat (dead tuples)
+SELECT
+  relname,
+  n_live_tup,
+  n_dead_tup,
+  ROUND(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2) AS dead_pct,
+  last_autovacuum,
+  last_autoanalyze
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC;
+
+-- Manually vacuum a specific table (without locking)
+VACUUM applications;
+
+-- Full vacuum: reclaims disk space, requires exclusive lock — use in maintenance windows only
+VACUUM FULL applications;</code></pre>
+
+  <div class="callout warning">
+    <span class="callout-label">Transaction ID wraparound — the silent disaster</span>
+    PostgreSQL transaction IDs are 32-bit integers (max ~2.1 billion). If a table goes 2 billion transactions without a VACUUM, its old row versions could appear "newer" than current ones — causing data corruption. PostgreSQL has a forced VACUUM mechanism to prevent this but it can cause downtime if it triggers unexpectedly. Monitor <code>pg_database.datfrozenxid</code> on production instances.
+  </div>
+
+
+  <h2>The Buffer Pool (shared_buffers)</h2>
+  <p>PostgreSQL maintains a shared memory area called the <strong>buffer pool</strong> (<code>shared_buffers</code>, default 128MB). All reads and writes go through this buffer. Hot pages stay in memory; cold pages are evicted when needed.</p>
+
+  <p>The latency cliff from Lesson 03 (Database Scaling): when your working set fits in <code>shared_buffers</code>, reads are RAM-speed (~100ns). When it overflows to disk, you pay the NVMe/HDD latency per miss.</p>
+
+  <pre><code>-- Recommended: set shared_buffers to 25% of total RAM
+-- For a 16GB server: shared_buffers = 4GB
+
+-- Check cache hit ratio (should be > 99% for a well-tuned instance)
+SELECT
+  SUM(heap_blks_hit) AS cache_hits,
+  SUM(heap_blks_read) AS disk_reads,
+  ROUND(
+    SUM(heap_blks_hit)::numeric /
+    NULLIF(SUM(heap_blks_hit) + SUM(heap_blks_read), 0) * 100, 2
+  ) AS cache_hit_pct
+FROM pg_statio_user_tables;</code></pre>
+
+  <p>If cache_hit_pct is below 95%, either add RAM (increase <code>shared_buffers</code>) or investigate which queries are causing excessive disk I/O.</p>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — MVCC</div>
+          <div class="playbook-q-text">"Why do readers not block writers in PostgreSQL? What's the mechanism?"</div>
+          <div class="playbook-q-probe">Follow-up: "What is a downside of MVCC? How does PostgreSQL deal with it?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "MVCC — Multi-Version Concurrency Control. When a row is updated, PostgreSQL doesn't overwrite it in place. Instead it marks the old version as expired and writes a new version. Each transaction holds a snapshot — it sees only the row versions that were committed before the snapshot was taken. A reader reading old version A doesn't block a writer creating new version B, and the writer doesn't block readers from continuing to read A. They operate on different row versions simultaneously."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "The downside is dead tuple accumulation. Every UPDATE creates a dead row version that accumulates space. High-write tables bloat over time — the physical table file grows and sequential scans must check each dead tuple's visibility. PostgreSQL deals with this via VACUUM: a background process that scans tables and reclaims dead tuple space. Autovacuum runs automatically, but long-running transactions prevent it from reclaiming tuples that are still visible to the oldest transaction snapshot."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Isolation levels</div>
+          <div class="playbook-q-text">"PostgreSQL's default isolation is READ COMMITTED. What anomaly can still occur at this level, and when does it matter?"</div>
+          <div class="playbook-q-probe">Follow-up: "When would you use SERIALIZABLE in a FastAPI app?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Non-repeatable reads. At READ COMMITTED, each statement in a transaction gets a fresh snapshot. If TXN B commits between two SELECTs in TXN A, the second SELECT sees TXN B's data. This matters when: you SELECT a value to use in a conditional, then UPDATE based on that condition — another transaction may have changed the value between your SELECT and your UPDATE. Example: check user's subscription tier, then grant access. If another transaction downgrades the subscription between the check and the access grant, you let an un-authorized operation through."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "SERIALIZABLE for operations where the result of your transaction depends on a condition that another concurrent transaction could change — and getting it wrong would be a data correctness bug, not just a stale read. Example in applyGOAT: a user can only have one active free trial. The check-and-insert must be serializable to prevent two concurrent requests both passing the check and both inserting a trial. In FastAPI: wrap the critical section in a SERIALIZABLE transaction, catch the serialization_failure exception, and retry with exponential backoff. Most frameworks have this built in as a retry decorator."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Practical locking</div>
+          <div class="playbook-q-text">"You have a FastAPI endpoint that deducts credits from a user's balance. Two concurrent requests for the same user could cause a race condition. How do you prevent it?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's the difference between SELECT FOR UPDATE and an application-level mutex?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Use SELECT FOR UPDATE inside a transaction. The flow: BEGIN → SELECT balance FROM credits WHERE user_id = X FOR UPDATE → check if balance >= deduction_amount → UPDATE credits SET balance = balance - deduction_amount WHERE user_id = X → COMMIT. The FOR UPDATE locks the row the moment it's read. Any concurrent transaction attempting to SELECT FOR UPDATE the same row will block until the first transaction commits or rolls back. This prevents two transactions from both seeing sufficient balance and both deducting, leaving the balance negative."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "SELECT FOR UPDATE is a database-level lock — durable across database restarts, works across multiple application servers, and is released automatically if the application crashes (transaction rolls back). An application-level mutex (asyncio.Lock, Redis distributed lock) only works within one process or one Redis instance, and if the app crashes holding the lock you may have a stuck lock. For anything involving financial data or correctness guarantees, use the database lock — it's part of the same transaction as your data change. Use application-level mutexes only for coordinating non-database work."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Candidates often know ACID exists but can't explain how each property is implemented. The strong answer ties each property to its mechanism: Atomicity → WAL rollback, Isolation → MVCC snapshots, Durability → WAL fsync before commit. Knowing that MVCC creates dead tuples and that VACUUM reclaims them is a senior-level signal.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0007-normalization.html">Lesson 07 — Normalization</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0009-nosql.html">Lesson 09 — NoSQL Databases</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to walk through a specific concurrency scenario in applyGOAT? Not sure when SERIALIZABLE vs REPEATABLE READ is the right choice? Want to understand how long-running AI generation transactions could be hurting your VACUUM?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 08 &nbsp;·&nbsp; Database Internals &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "PostgreSQL's MVCC means readers never block writers. Which mechanism makes this possible?",
+    options: [
+      "Read locks are automatically upgraded to write locks when needed",
+      "Updates write a new row version instead of overwriting in place; readers and writers operate on different versions simultaneously",
+      "Reads are cached in memory and never touch the actual table rows",
+      "PostgreSQL queues all operations and processes them sequentially"
+    ],
+    answer: 1,
+    explanation: "MVCC: UPDATE marks the old row version as dead (xmax = transaction ID) and creates a new version (xmin = transaction ID). A reader holding a snapshot from before the UPDATE continues reading the old version. The writer creates the new version. No lock needed between them — they work on different tuple versions."
+  },
+  {
+    q: "Your table has n_dead_tup = 2,000,000 and n_live_tup = 500,000. What's happening and what do you do?",
+    options: [
+      "The table is corrupted — run REINDEX to fix it",
+      "Dead tuples from MVCC have accumulated — VACUUM or increase autovacuum aggressiveness",
+      "Read performance is fine — dead tuples are invisible to queries",
+      "This means 2M rows were deleted — run VACUUM FULL to shrink the file"
+    ],
+    answer: 1,
+    explanation: "80% dead tuples: VACUUM hasn't kept up with updates/deletes. Dead tuples take space and slow sequential scans (the scanner must check each dead tuple's visibility). Run VACUUM applications to reclaim space without locking. VACUUM FULL reclaims disk space but takes an exclusive lock — use only in a maintenance window. Also investigate why autovacuum isn't keeping up."
+  },
+  {
+    q: "At READ COMMITTED isolation level, you SELECT a user's balance, see $100, then UPDATE to subtract $80. Another transaction committed a $100 subtraction between your SELECT and your UPDATE. What's the result?",
+    options: [
+      "Your transaction sees the committed subtraction and fails with a concurrency error",
+      "Both transactions succeed independently — balance ends at $-80 (double-spend)",
+      "PostgreSQL automatically retries your transaction with the new data",
+      "Your UPDATE is blocked until the other transaction commits"
+    ],
+    answer: 1,
+    explanation: "At READ COMMITTED without FOR UPDATE: your SELECT saw $100, computed new balance = $20. The other transaction committed $0 (100-100). Your UPDATE sets balance = $20 — overwriting the other transaction's result. Final balance: $20 instead of -$80 (but still wrong — should be $0 or a rejected transaction). Fix: use SELECT FOR UPDATE to lock the row, or SERIALIZABLE isolation."
+  },
+  {
+    q: "What does SELECT FOR UPDATE do, and when do you need it?",
+    options: [
+      "It creates a read-only snapshot of the selected rows for the duration of the transaction",
+      "It locks the selected rows so no other transaction can modify them until your transaction commits or rolls back",
+      "It updates the selected rows immediately using the current transaction's snapshot",
+      "It prevents VACUUM from cleaning up the selected rows until explicitly released"
+    ],
+    answer: 1,
+    explanation: "SELECT FOR UPDATE acquires an exclusive row lock on each returned row. Other transactions trying to SELECT FOR UPDATE the same rows (or UPDATE/DELETE them) will block until your transaction completes. Use when: reading a value and conditionally updating it in the same transaction (balance check + deduct, inventory check + reserve). Without it, two concurrent transactions can both pass the check and both write inconsistent results."
+  },
+  {
+    q: "What's the difference between VACUUM and VACUUM FULL?",
+    options: [
+      "VACUUM removes dead tuples; VACUUM FULL rebuilds the entire table file and requires an exclusive lock",
+      "VACUUM is manual; VACUUM FULL is what autovacuum runs automatically",
+      "VACUUM FULL also rebuilds all indexes; VACUUM only reclaims tuple space",
+      "VACUUM FULL is safe to run anytime; VACUUM requires a maintenance window"
+    ],
+    answer: 0,
+    explanation: "VACUUM: reclaims dead tuple space within the existing table file (marks it reusable), no exclusive lock, safe to run on live tables. VACUUM FULL: rewrites the entire table into a new file — actually shrinks the physical file on disk. Requires an exclusive lock, blocking all reads and writes during the operation. Use VACUUM FULL rarely, in maintenance windows, only when table bloat is severe and disk space is critical."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

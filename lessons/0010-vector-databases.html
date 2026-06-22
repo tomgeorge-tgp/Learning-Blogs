@@ -1,0 +1,634 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 10 — Vector Databases</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .embed-vis {
+      background: var(--code-bg); color: var(--code-text);
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.7;
+      padding: 1.25rem 1.5rem; border-radius: 8px; overflow-x: auto;
+      margin-bottom: 1.25rem; white-space: pre;
+    }
+    .metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.25rem 0; }
+    .metric-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; font-family: var(--font-ui); }
+    .metric-val { font-size: 1.4rem; font-weight: 800; color: var(--accent); line-height: 1.1; letter-spacing: -0.03em; }
+    .metric-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; line-height: 1.3; }
+
+    .hnsw-layer {
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 2;
+      background: var(--code-bg); color: var(--code-text);
+      padding: 1.25rem 1.5rem; border-radius: 8px; overflow-x: auto; white-space: pre;
+      margin-bottom: 1.25rem;
+    }
+
+    .index-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0; }
+    .index-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; font-family: var(--font-ui); font-size: 0.85rem; }
+    .index-card-name { font-weight: 700; color: var(--accent); margin-bottom: 0.5rem; }
+    @media (max-width: 640px) { .index-grid { grid-template-columns: 1fr; } .metric-row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 10</div>
+    <div class="pillar-badge">Vector Databases</div>
+    <h1 class="lesson-title">Vector Databases</h1>
+    <p class="lesson-subtitle">Embeddings, ANN search, HNSW, IVF — the infrastructure behind every RAG pipeline you build.</p>
+  </header>
+
+  <h2>What is an Embedding?</h2>
+  <p>An embedding is a dense numerical vector that encodes the <strong>semantic meaning</strong> of content. Texts, images, code, and audio can all be embedded. Things that are semantically similar end up close together in the vector space.</p>
+
+  <div class="embed-vis">Text: "Software engineer with Python and FastAPI experience"
+Embedding: [0.021, -0.184, 0.337, ..., 0.092]  ← 1536 floats (OpenAI text-embedding-3-small)
+
+Text: "Backend developer skilled in Python web frameworks"
+Embedding: [0.019, -0.179, 0.341, ..., 0.088]  ← very close in 1536-dimensional space
+
+Text: "Professional chef specializing in Italian cuisine"
+Embedding: [0.412, 0.093, -0.228, ..., -0.301] ← far away in vector space
+
+Similarity measure: cosine similarity
+  cos_sim(engineer, backend_dev) ≈ 0.94   ← very similar
+  cos_sim(engineer, chef)        ≈ 0.12   ← unrelated</div>
+
+  <p>This is why RAG (Retrieval Augmented Generation) works: you embed a user's query, find the document chunks whose embeddings are closest, and feed those as context to the LLM. The retrieval is semantic, not keyword-based.</p>
+
+  <h3>Embedding models in your stack</h3>
+  <table>
+    <thead>
+      <tr><th>Model</th><th>Dimensions</th><th>Use case</th><th>Your context</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>OpenAI text-embedding-3-small</td>
+        <td>1536</td>
+        <td>General text: documents, Q&A, search</td>
+        <td>applyGOAT resume chunks, job descriptions</td>
+      </tr>
+      <tr>
+        <td>OpenAI text-embedding-3-large</td>
+        <td>3072</td>
+        <td>Higher accuracy, higher cost</td>
+        <td>Insurance policy docs in AI Sales Agent</td>
+      </tr>
+      <tr>
+        <td>Azure OpenAI (same models)</td>
+        <td>1536 / 3072</td>
+        <td>Same as OpenAI, but on your Azure tenant</td>
+        <td>Your current stack — Azure OpenAI</td>
+      </tr>
+      <tr>
+        <td>sentence-transformers (local)</td>
+        <td>384–768</td>
+        <td>Privacy-sensitive data, zero API cost</td>
+        <td>KeyShield / Mini Hermes — no data leaves</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <h2>Why Not a B-Tree for Vector Search?</h2>
+  <p>B-Trees work because values have a natural total order — integers, strings, dates. You can compare any two values and say "A < B." This is what makes range scans possible: walk left in the tree, walk right, done.</p>
+
+  <p>Vectors in 1536 dimensions have <strong>no total order</strong>. You can't say vector A is "less than" vector B in any meaningful sense. And the <strong>curse of dimensionality</strong> makes tree-based indexing degenerate:</p>
+
+  <div class="metric-row">
+    <div class="metric-card">
+      <div class="metric-val">2D</div>
+      <div class="metric-label">B-tree works fine. Sorted order clear.</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">100D</div>
+      <div class="metric-label">Tree pruning becomes ineffective — most branches must be explored.</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">1536D</div>
+      <div class="metric-label">All vectors are approximately equidistant. Tree degenerates to linear scan.</div>
+    </div>
+  </div>
+
+  <p>In high-dimensional space, the ratio of the nearest to farthest neighbor approaches 1 — everything is equally "far." The tree's ability to prune branches disappears. Exact nearest neighbor becomes O(n) — a linear scan over every vector. With 10 million 1536-dimensional vectors, that's unusable.</p>
+
+  <p><strong>The solution:</strong> Approximate Nearest Neighbor (ANN) algorithms. Trade a small accuracy loss (~1–5%) for O(log n) or sub-linear search. For RAG, this trade-off is completely acceptable — semantic retrieval doesn't need mathematical exactness.</p>
+
+
+  <h2>HNSW — Hierarchical Navigable Small World</h2>
+  <p>The dominant ANN algorithm used by Pinecone, pgvector, Weaviate, Qdrant, and FAISS. Builds a multi-layer graph of vectors. Navigation is greedy — always move to the neighbor closest to the query.</p>
+
+  <div class="hnsw-layer">Layer 2 (very sparse — "highway"):
+  A ─────────────────── F ─────────────── K
+                        │
+Layer 1 (moderately connected):
+  B ── C ── D ── E ── F ── G ── H ── I ── J ── K
+
+Layer 0 (fully connected — "local neighborhood"):
+  All vectors, dense local edges, precise search
+
+Query vector Q enters at Layer 2 (sparse, fast navigation)
+  Step 1: Start at random node. Greedy: move to nearest neighbor to Q.
+  Step 2: Descend to Layer 1 at current position. Greedy again.
+  Step 3: Descend to Layer 0. Explore neighborhood to find top-k nearest.
+
+Result: O(log n) traversal to approximate nearest neighbors.</div>
+
+  <h3>Key HNSW parameters</h3>
+  <table>
+    <thead>
+      <tr><th>Parameter</th><th>What it controls</th><th>Higher value → </th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>M</code></td>
+        <td>Number of edges per node in the graph. Controls graph connectivity.</td>
+        <td>Better recall, more memory, slower index build. Typical: 16–64.</td>
+      </tr>
+      <tr>
+        <td><code>ef_construction</code></td>
+        <td>Search breadth during index build — how many candidates considered when inserting a new vector.</td>
+        <td>Better recall at query time, much slower index build. Typical: 100–400.</td>
+      </tr>
+      <tr>
+        <td><code>ef_search</code></td>
+        <td>Search breadth at query time — how many candidates explored during search.</td>
+        <td>Better recall, higher query latency. Tune per use case.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><strong>The recall-latency dial:</strong> Increase <code>ef_search</code> to get closer to 100% recall (exact result) at the cost of slower queries. Decrease it for faster queries at ~95% recall. Pinecone exposes this as the <code>top_k</code> and internal beam width.</p>
+
+  <h3>Where does cosine similarity fit inside HNSW?</h3>
+  <p>HNSW and cosine similarity are two different layers that work together. A common point of confusion: HNSW is the <strong>navigation strategy</strong> — it decides which vectors to even look at. Cosine similarity is the <strong>ruler</strong> used at every single comparison step during that navigation.</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>What it is</th><th>Role</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>HNSW</strong></td><td>Multi-layer graph navigation algorithm</td><td>Decides <em>which vectors to compare</em> — skips most of the index</td></tr>
+      <tr><td><strong>Cosine similarity</strong></td><td>Distance metric: dot product of unit vectors</td><td>The actual measurement at each comparison — "how close is this node to the query?"</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hnsw-layer">Query vector arrives
+      ↓
+HNSW: "start at top layer, pick entry point"
+      ↓
+At each step:
+  cosine_sim(query, neighbor_A) = 0.87
+  cosine_sim(query, neighbor_B) = 0.91  ← highest
+  cosine_sim(query, neighbor_C) = 0.74
+      ↓
+"Move to neighbor_B" ← greedy step uses cosine similarity to decide
+      ↓
+Descend a layer, repeat with local neighbors
+      ↓
+Layer 0: sweep local neighborhood using cosine similarity
+      ↓
+Return top-k by cosine similarity score</div>
+
+  <p>Without HNSW: you'd compute cosine similarity against every vector in the index — O(n). At 10M vectors that's unusable.<br>
+  Without cosine similarity: HNSW has no way to know which direction to move.<br>
+  <strong>HNSW reduces the number of cosine comparisons from O(n) to O(log n)</strong> by intelligently skipping most of the space.</p>
+
+  <p>In Pinecone, you declare which metric to use when creating the index (<code>metric="cosine"</code>). That tells HNSW what ruler to use at each graph step. The <code>top_k</code> results come back already ranked by cosine similarity score (1.0 = identical, 0.0 = orthogonal).</p>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT context</span>
+    When your RAG pipeline calls <code>index.query(vector=query_embedding, top_k=5)</code>, HNSW navigates the graph in ~dozens of cosine comparisons to find the 5 best chunks — instead of computing cosine similarity against all 500K resume chunks. HNSW is what makes this O(log n) fast. Cosine similarity is what defines "best."
+  </div>
+
+  <h3>Common misconception — the top layer is NOT a summary</h3>
+  <p>Intuition says: "the top layer must be some kind of summary or centroid of the vectors below it." This is wrong. The top layers contain <strong>the same vectors as Layer 0</strong> — just a random sparse subset of them, with longer-range connections.</p>
+
+  <p>When a vector is inserted into HNSW, a random number is rolled to determine how many layers it appears in:</p>
+
+  <pre><code>Most vectors:  Layer 0 only                (~60% probability)
+Some vectors:  Layer 0 + Layer 1           (~25% probability)
+Few vectors:   Layer 0 + Layer 1 + Layer 2 (~10% probability)
+Very few:      All layers                  (~5% probability)</code></pre>
+
+  <p>The same vector, just promoted to higher layers by random chance — like how some people are in a local group chat AND a national committee. They're the same person, not a representative of the group.</p>
+
+  <p><strong>Why does a random sparse sample still work?</strong></p>
+  <ul>
+    <li>You don't need to start at the semantically "closest summary" — you just need to start <em>somewhere not terrible</em> and refine from there</li>
+    <li>In a well-connected graph, a random sparse sample gives you fast "highway" jumps across the space</li>
+    <li>The multi-layer structure guarantees convergence to the right neighborhood by Layer 0 regardless of where you started</li>
+  </ul>
+
+  <p>The analogy that actually holds: a <strong>skip list</strong>. A skip list doesn't summarize lower levels — it randomly promotes some nodes to an express lane so you can skip large sections during search. HNSW is the same idea but in graph form across high-dimensional space.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">IVF does use summaries — don't confuse them</span>
+    IVF (below) <em>does</em> use centroids — cluster centers computed by k-means that genuinely summarize groups of nearby vectors. That's the key structural difference between HNSW and IVF. HNSW: random sparse promotion. IVF: trained centroid summaries.
+  </div>
+
+
+  <h2>IVF — Inverted File Index</h2>
+  <p>A different ANN algorithm, complementary to HNSW. Used by FAISS (Facebook AI Similarity Search) and pgvector (as IVFFlat).</p>
+
+  <p><strong>How it works:</strong></p>
+  <ol>
+    <li>During index build: run k-means clustering. Divide all vectors into N clusters (centroids).</li>
+    <li>During query: compute distance from the query to each centroid. Search only the closest <code>nprobe</code> clusters.</li>
+    <li>Within those clusters: linear scan of candidate vectors.</li>
+  </ol>
+
+  <div class="embed-vis">Training (index build):
+  All 1M vectors → k-means clustering → 1000 centroids
+
+Query:
+  Distance from Q to all 1000 centroids → pick nearest nprobe=10 centroids
+  Linear scan of ~10,000 vectors (10 clusters × 1000 vectors each)
+  vs. scanning 1,000,000 vectors for exact search → 100× speedup
+
+Trade-off:
+  nprobe=1:  fast, low recall (might miss the true nearest neighbor)
+  nprobe=100: slower, high recall (searches 10% of all vectors)
+  nprobe=1000: = full scan, 100% recall, no benefit from index</div>
+
+  <h3>HNSW vs IVF</h3>
+  <table>
+    <thead>
+      <tr><th></th><th>HNSW</th><th>IVF</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Query speed</strong></td><td>Faster at same recall</td><td>Faster with GPU (FAISS+CUDA)</td></tr>
+      <tr><td><strong>Memory</strong></td><td>Higher (graph edges)</td><td>Lower (centroids + cluster assignments)</td></tr>
+      <tr><td><strong>Index build</strong></td><td>Slow, incremental insert possible</td><td>Requires training phase, then fast bulk insert</td></tr>
+      <tr><td><strong>Dynamic updates</strong></td><td>Yes — insert/delete without rebuild</td><td>Difficult — retraining needed for significant data changes</td></tr>
+      <tr><td><strong>Best for</strong></td><td>General purpose, production serving</td><td>Massive offline datasets, GPU inference</td></tr>
+    </tbody>
+  </table>
+
+
+  <h2>Pinecone — Managed Vector Database</h2>
+  <p>What you're using in applyGOAT and AI Sales Agent. Managed HNSW under the hood.</p>
+
+  <pre><code>from pinecone import Pinecone
+
+pc = Pinecone(api_key="...")
+index = pc.Index("applygoat-resumes")
+
+# Upsert vectors (embed first, then store)
+index.upsert(vectors=[
+    {
+        "id": "resume:user123:chunk0",
+        "values": embedding_vector,           # 1536 floats
+        "metadata": {
+            "user_id": "user123",
+            "tenant_id": "goat-001",
+            "chunk_index": 0,
+            "text": "Software engineer with 4 years Python experience...",
+            "created_at": "2024-06-01"
+        }
+    }
+])
+
+# Query — semantic search
+results = index.query(
+    vector=query_embedding,
+    top_k=5,
+    filter={"tenant_id": {"$eq": "goat-001"}},   # metadata filter
+    include_metadata=True
+)
+for match in results.matches:
+    print(match.score, match.metadata["text"])</code></pre>
+
+  <h3>Pinecone architecture concepts</h3>
+  <table>
+    <thead>
+      <tr><th>Concept</th><th>What it is</th><th>Use in applyGOAT</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Namespaces</strong></td>
+        <td>Logical partitions within an index. Queries are scoped to a namespace.</td>
+        <td>Namespace per tenant: <code>namespace="goat-001"</code>. Tenant isolation without separate indexes.</td>
+      </tr>
+      <tr>
+        <td><strong>Metadata filtering</strong></td>
+        <td>Filter results by key-value metadata attached to vectors. Applied after ANN, not during (in most implementations).</td>
+        <td><code>filter={"user_id": "abc"}</code> — only return chunks belonging to this user's resume.</td>
+      </tr>
+      <tr>
+        <td><strong>Hybrid search</strong></td>
+        <td>Combine dense (embedding) search with sparse (BM25 keyword) search. Pinecone supports this natively.</td>
+        <td>Job description search where exact keyword match AND semantic match both matter.</td>
+      </tr>
+      <tr>
+        <td><strong>Eventual consistency</strong></td>
+        <td>Upserted vectors become queryable within seconds, not instantly.</td>
+        <td>After resume upload: wait for embedding + upsert before telling user "search is ready." Or accept the delay and let the user search immediately (new chunks may not appear for a few seconds).</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <h2>pgvector — Vector Search Inside PostgreSQL</h2>
+  <p>pgvector is a PostgreSQL extension that adds a <code>vector</code> data type and ANN indexes (HNSW and IVFFlat). Lets you do vector search directly in your existing PostgreSQL database without a separate service.</p>
+
+  <pre><code>-- Enable extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Add vector column to existing table
+ALTER TABLE resumes ADD COLUMN embedding vector(1536);
+
+-- Create HNSW index
+CREATE INDEX ON resumes
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Semantic search: find 5 most similar resumes to a job description
+SELECT id, user_id, LEFT(content, 200)
+FROM   resumes
+ORDER BY embedding <=> $1   -- <=> = cosine distance operator
+LIMIT 5;
+
+-- Hybrid: semantic match + metadata filter in one query
+SELECT id, user_id
+FROM   resumes
+WHERE  tenant_id = 'goat-001'
+  AND  created_at > NOW() - INTERVAL '30 days'
+ORDER BY embedding <=> $1
+LIMIT 10;</code></pre>
+
+  <h3>Pinecone vs pgvector — when to use each</h3>
+  <table>
+    <thead>
+      <tr><th></th><th>Pinecone</th><th>pgvector</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Scale</strong></td><td>100M+ vectors, managed sharding</td><td>Up to ~10M vectors comfortably on a single node</td></tr>
+      <tr><td><strong>Operational overhead</strong></td><td>Zero — fully managed</td><td>You manage PostgreSQL + index tuning</td></tr>
+      <tr><td><strong>SQL joins</strong></td><td>No — separate service</td><td>Yes — join with any PostgreSQL table</td></tr>
+      <tr><td><strong>Hybrid search</strong></td><td>Native support</td><td>Manual: combine vector score + pg_trgm or FTS</td></tr>
+      <tr><td><strong>Consistency</strong></td><td>Eventual</td><td>ACID — same transaction as inserts</td></tr>
+      <tr><td><strong>Cost</strong></td><td>Based on vector count + queries</td><td>Your PostgreSQL server cost</td></tr>
+      <tr><td><strong>When to choose</strong></td><td>Large scale, want managed infrastructure, hybrid search needed</td><td>Small-medium scale, already on PostgreSQL, want data locality + joins</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT recommendation</span>
+    At 20K users, pgvector is more than sufficient and keeps your architecture simpler — one PostgreSQL instance handles both relational data and vector search. Migrate to Pinecone when vector count exceeds ~5M or when query latency under load becomes unacceptable. The migration is straightforward: same embeddings, different client.
+  </div>
+
+
+  <h2>Building a RAG Pipeline — The Full Architecture</h2>
+  <pre><code># Complete RAG pipeline for applyGOAT job matching
+
+## Ingestion (on resume upload)
+1. User uploads resume PDF
+2. Extract text, chunk by paragraph/section
+3. For each chunk: embed via Azure OpenAI text-embedding-3-small
+4. Upsert to Pinecone with metadata: {user_id, tenant_id, chunk_index, text}
+5. Store resume metadata in PostgreSQL
+
+## Query (on job match request)
+1. Receive job description from user
+2. Embed job description: query_vector = embed(job_description)
+3. Query Pinecone: top_k=10 most similar resume chunks, filter by tenant_id
+4. Fetch full context: retrieve matched chunks' text from metadata
+5. Construct LLM prompt:
+     System: "You are a career advisor..."
+     User: f"Job description: {job_desc}\n\nRelevant resume sections:\n{chunks_text}\n\nAssess match and gaps."
+6. Stream response via Azure OpenAI
+7. Cache result in Redis: key = hash(user_id + job_id), TTL = 1 hour</code></pre>
+
+  <h3>Chunking strategy matters more than most engineers realize</h3>
+  <table>
+    <thead>
+      <tr><th>Strategy</th><th>Chunk size</th><th>Pro</th><th>Con</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Fixed-size</strong></td>
+        <td>512 tokens, 50-token overlap</td>
+        <td>Simple, predictable</td>
+        <td>May split semantically coherent sections mid-sentence</td>
+      </tr>
+      <tr>
+        <td><strong>Semantic/section</strong></td>
+        <td>Variable, by paragraph/heading</td>
+        <td>Chunks contain coherent ideas. Better embedding quality.</td>
+        <td>Variable sizes, harder to manage</td>
+      </tr>
+      <tr>
+        <td><strong>Sentence-level</strong></td>
+        <td>1–5 sentences</td>
+        <td>Very precise retrieval</td>
+        <td>Too granular — loses context. LLM gets insufficient text per chunk.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Recommendation: section-level chunks for resumes (each section = one chunk), with 100-token overlap to preserve cross-section context. Embed the chunk title + body together for better signal.</p>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Fundamentals</div>
+          <div class="playbook-q-text">"What is a vector database and why can't you use a traditional database index for vector search?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's the curse of dimensionality?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "A vector database stores dense numerical vectors (embeddings) and indexes them for similarity search — finding the k vectors closest to a query vector by some distance metric (cosine similarity, Euclidean distance). Traditional B-tree indexes require a total ordering of values — you compare A and B and one is smaller. Vectors have no such order. Finding the nearest vector requires comparing the query to all stored vectors (O(n)) unless you use a specialized data structure like HNSW or IVF that approximates the result in O(log n) time."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "The curse of dimensionality: in high-dimensional space, all vectors become approximately equidistant from each other. The ratio of the distance to the nearest neighbor vs. the farthest neighbor approaches 1 as dimensions increase. This means the 'nearest' neighbor isn't much closer than any random vector — the notion of proximity breaks down. Tree-based indexes exploit the clustering of nearby data points to prune large sections of the search space. When everything is equally far, there's nothing to prune — the tree degenerates to a linear scan. This is why specialized ANN algorithms (HNSW, IVF) are needed for vectors above ~20 dimensions."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — HNSW</div>
+          <div class="playbook-q-text">"How does HNSW work? Why is it O(log n)?"</div>
+          <div class="playbook-q-probe">Follow-up: "What does 'approximate' mean in practice for a RAG pipeline? Is it a problem?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "HNSW builds a multi-layer graph. Upper layers are sparse with long-range connections — like a highway network for fast coarse navigation. Lower layers are denser with local connections for precision. Search starts at the top layer: greedily move to the neighbor closest to the query. Descend to the next layer at the current position. Repeat until reaching Layer 0 where the local neighborhood is searched exhaustively. The hierarchical structure means you navigate across the full space quickly at the top, then zoom in for precision at the bottom. This gives O(log n) average complexity — similar to how you navigate a city: highway (sparse) → city road (medium) → street (dense)."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Approximate means HNSW may miss the mathematically closest vector by a tiny margin — typically 95–99% recall depending on the ef_search parameter. For a RAG pipeline: not a problem in practice. The LLM receives semantically similar chunks, and semantic retrieval doesn't need mathematical exactness. If the true nearest neighbor has cosine similarity 0.94 and HNSW returns a chunk with 0.92, the LLM gets useful context either way. Where approximate retrieval is problematic: exact deduplication (need the exact nearest), fraud detection (missing a 0.2% closer match has business impact), or medical/legal where missing a specific document creates liability. For conversational RAG: ANN is fine."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Design (senior signal)</div>
+          <div class="playbook-q-text">"Design the vector search system for applyGOAT — resume chunks stored for semantic job matching. 500K users, 5M resume chunks."</div>
+          <div class="playbook-q-probe">Follow-up: "How do you handle the fact that Pinecone is eventually consistent?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "At 5M vectors I'd start with pgvector — it handles this scale comfortably on a well-provisioned PostgreSQL node, and you get ACID consistency and SQL JOINs (can join vector results directly with user/tenant tables). Schema: ALTER TABLE resume_chunks ADD COLUMN embedding vector(1536). HNSW index with m=16, ef_construction=128. At query time: embed the job description, query resume_chunks ORDER BY embedding &lt;=&gt; $query LIMIT 10 WHERE tenant_id = $tenant AND user_id = $user. Cache frequent queries in Redis. If traffic grows past ~5M vectors or query latency degrades, migrate to Pinecone — same embeddings, new client. Use namespaces for tenant isolation."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Pinecone is eventually consistent — upserted vectors become queryable within seconds, not instantly. Two strategies: (1) Optimistic UI — tell the user 'your resume is being analyzed' and let them trigger the job match after ~5 seconds. By then, chunks are indexed. (2) Track index state in PostgreSQL — after upsert, store embedding_status = 'indexed' with a timestamp. Disable job matching for that resume until the status is updated (poll or wait for a webhook if Pinecone adds one). For the AI Sales Agent use case where a policy document is uploaded: background task embeds + upserts, marks document as 'ready,' then surfaces it in the UI. Don't let users query unindexed documents."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Most candidates know vector databases exist and that they use them via Pinecone. The senior differentiator: explaining WHY B-trees fail in high dimensions (curse of dimensionality), what HNSW actually does (navigable graph, greedy descent, multi-layer), what the ef_search parameter trades, and when pgvector is a better choice than Pinecone. Know the tool, not just the API.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p><strong>Efficient and Robust ANN Search using HNSW — Malkov & Yashunin (2018)</strong><br>
+  The original HNSW paper. Readable without a PhD in ML. Sections 2–4 explain the algorithm clearly. Worth 30 minutes.</p>
+  <p><strong>Pinecone Documentation — Architecture and Filtering</strong><br>
+  The metadata filtering docs explain when filters are applied relative to ANN search — important for understanding performance at scale.</p>
+  <p><strong>pgvector GitHub — README and examples</strong><br>
+  Documents HNSW and IVFFlat configuration parameters. The performance benchmarks help calibrate expectations for your scale.</p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0009-nosql.html">Lesson 09 — NoSQL Databases</a> &nbsp;|&nbsp;
+    <strong>Database series complete:</strong> <a href="0003-database-scaling.html">Lesson 03 — Database Scaling (the architecture layer)</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to migrate applyGOAT from Pinecone to pgvector and need to think through the trade-offs? Not sure how to chunk your resumes for best retrieval quality? Want to build hybrid search (keyword + semantic) for job matching?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 10 &nbsp;·&nbsp; Vector Databases &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "Why can't a B-tree index be used for nearest-neighbor search in 1536-dimensional vector space?",
+    options: [
+      "B-trees are limited to integer and string types — they can't store floats",
+      "B-trees require a total ordering of values; high-dimensional vectors have no meaningful total order, and the curse of dimensionality makes tree pruning ineffective",
+      "B-trees can only index columns up to 100 bytes; a 1536-float vector is too large",
+      "B-trees require exact equality — they can't compute similarity distances"
+    ],
+    answer: 1,
+    explanation: "B-trees need a total order (A < B < C...). Vectors have no such order. Additionally, the curse of dimensionality: in 1536D, all vectors become approximately equidistant, so the tree's ability to prune branches (skip large parts of the search space) disappears. It degenerates to a linear scan — O(n) with tree overhead. ANN algorithms (HNSW, IVF) use graph or clustering structures specifically designed for high-dimensional similarity."
+  },
+  {
+    q: "In HNSW, what is the role of the top layers vs the bottom layer (Layer 0)?",
+    options: [
+      "Top layers store the most recently inserted vectors; Layer 0 stores old vectors",
+      "Top layers are sparse with long-range connections for fast coarse navigation; Layer 0 is dense for precise local neighborhood search",
+      "Top layers index by metadata; Layer 0 indexes by vector values",
+      "Top layers handle writes; Layer 0 handles reads"
+    ],
+    answer: 1,
+    explanation: "HNSW's hierarchical structure: upper layers are sparse (fewer nodes, longer-range edges) — like a highway network for fast navigation across the whole space. Layer 0 contains all vectors with dense local connections for precise search. Query greedy-descends from top to bottom, narrowing in on the true nearest neighbors at each level. This is why search is O(log n) — the sparse upper layers skip large chunks of the space efficiently."
+  },
+  {
+    q: "You increase HNSW's ef_search parameter from 50 to 200. What happens?",
+    options: [
+      "Index build time increases significantly but query time stays the same",
+      "Memory usage decreases as the graph is pruned more aggressively",
+      "Query recall improves (closer to exact result) but query latency increases",
+      "The number of vectors indexed increases by 4×"
+    ],
+    answer: 2,
+    explanation: "ef_search controls search breadth at query time — how many candidates are explored during graph traversal. Higher ef_search = explore more candidates = find vectors closer to the true nearest neighbor = higher recall. The trade-off: more exploration = more time. ef_search is the precision-latency dial at query time. ef_construction controls this during index build (affects index quality, not query time)."
+  },
+  {
+    q: "Pinecone shows 'vector becomes queryable within seconds after upsert.' What consistency model is this?",
+    options: [
+      "Linearisable consistency — all reads after an upsert see it immediately",
+      "Eventual consistency — the system converges to a consistent state after a bounded delay",
+      "Read-your-own-writes consistency — only the upserting client sees it immediately",
+      "Monotonic read consistency — you always see at least what you saw before"
+    ],
+    answer: 1,
+    explanation: "Eventual consistency: writes are acknowledged immediately but propagate to all replicas/indexes within seconds, not instantly. As covered in Lesson 01 (CAP) and Lesson 03 (Scaling): Pinecone is AP — available during partitions, eventual consistency in normal operation. For RAG this is acceptable; a 2-second delay before a newly uploaded resume chunk is searchable is fine in almost all UX contexts."
+  },
+  {
+    q: "You have 2M resume chunks and want semantic search with SQL JOINs to filter by tenant and user. Budget is limited. pgvector or Pinecone?",
+    options: [
+      "Pinecone — always better than pgvector at any scale",
+      "pgvector — 2M vectors is well within its capacity, you get SQL JOINs, ACID consistency, and avoid an extra service",
+      "Pinecone — metadata filtering is more powerful than SQL WHERE clauses",
+      "Neither — implement your own ANN index in Python"
+    ],
+    answer: 1,
+    explanation: "pgvector handles 2M 1536-dim vectors comfortably on a good PostgreSQL instance (typically 8–16GB RAM). You get: SQL JOINs (filter by tenant_id, user_id in the same query), ACID (upserted chunks immediately queryable in the same transaction), and no extra managed service cost. Choose Pinecone when scale exceeds ~5M vectors, when managed infrastructure is worth the cost, or when you need native hybrid search. At 2M vectors, pgvector is the simpler, cheaper, more consistent choice."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

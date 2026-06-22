@@ -1,0 +1,540 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 06 — Query Optimization</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .bad-good { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0; }
+    .bad-good-card { border-radius: 8px; overflow: hidden; }
+    .bad-good-label { font-family: var(--font-ui); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.4rem 0.9rem; }
+    .bad-good-label.bad { background: var(--danger); color: white; }
+    .bad-good-label.good { background: var(--success); color: white; }
+    .bad-good-code { background: var(--code-bg); color: var(--code-text); font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.6; padding: 0.9rem 1rem; margin: 0; }
+    @media (max-width: 640px) { .bad-good { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 06</div>
+    <div class="pillar-badge">SQL</div>
+    <h1 class="lesson-title">Query Optimization</h1>
+    <p class="lesson-subtitle">The specific patterns that break indexes, create N+1 problems, and kill pagination — and the rewrites that fix them.</p>
+  </header>
+
+  <h2>Optimization #1 — Never Wrap Indexed Columns in Functions</h2>
+  <p>The single most common reason a perfectly good index is ignored. When you apply a function to an indexed column in a WHERE clause, the planner can no longer use the index — it has to compute the function for every row and compare the result.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">Breaks the index</div>
+      <pre class="bad-good-code">-- Index on email — NOT used
+WHERE LOWER(email) = 'tom@example.com'
+
+-- Index on created_at — NOT used
+WHERE DATE(created_at) = '2024-01-15'
+
+-- Index on name — NOT used
+WHERE SUBSTRING(name, 1, 3) = 'Tom'</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Preserves the index</div>
+      <pre class="bad-good-code">-- Store emails lowercase, or use expression index
+WHERE email = LOWER('Tom@example.com')
+
+-- Use a range instead of extracting
+WHERE created_at >= '2024-01-15'
+  AND created_at < '2024-01-16'
+
+-- Prefix search with LIKE (only left-anchored)
+WHERE name LIKE 'Tom%'</pre>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Expression indexes — the escape hatch</span>
+    If you must filter on a transformed column, create an index on the expression itself:<br>
+    <code>CREATE INDEX idx_users_email_lower ON users (LOWER(email));</code><br>
+    Now <code>WHERE LOWER(email) = ?</code> uses this index. PostgreSQL matches the expression in the query to the expression in the index.
+  </div>
+
+  <h2>Optimization #2 — Implicit Type Coercion</h2>
+  <p>If the type of your parameter doesn't match the column type exactly, PostgreSQL applies an implicit cast — which behaves like wrapping the column in a function and breaks the index.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">Coercion breaks index</div>
+      <pre class="bad-good-code">-- user_id is UUID, but passing a string
+-- PostgreSQL must cast every stored UUID to text
+WHERE user_id = 'abc-123'
+
+-- id is INTEGER, but param is text
+WHERE id = '42'</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Explicit cast preserves index</div>
+      <pre class="bad-good-code">-- Cast the parameter, not the column
+WHERE user_id = 'abc-123'::uuid
+
+-- Or ensure your ORM passes the right type
+-- SQLAlchemy: use uuid.UUID() objects, not strings</pre>
+    </div>
+  </div>
+
+  <p>In FastAPI with SQLAlchemy or asyncpg, pass UUIDs as <code>uuid.UUID</code> objects, not strings. The driver handles the correct wire type and the planner uses the index.</p>
+
+
+  <h2>Optimization #3 — The N+1 Query Problem</h2>
+  <p>The most common ORM-related performance failure. You fetch N records, then issue one query per record to get related data — N+1 total queries instead of 1 or 2.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">N+1 (ORM lazy loading)</div>
+      <pre class="bad-good-code"># SQLAlchemy lazy loading
+users = session.query(User).all()  # 1 query
+for user in users:
+    # Each access fires a new SELECT
+    print(user.applications)       # N queries
+
+# FastAPI equivalent
+users = await db.fetch_all("SELECT * FROM users")
+for user in users:
+    apps = await db.fetch_all(
+        "SELECT * FROM applications WHERE user_id=$1",
+        user['id']  # N separate DB round trips
+    )</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Eager load or JOIN</div>
+      <pre class="bad-good-code"># SQLAlchemy eager loading
+from sqlalchemy.orm import selectinload
+users = session.query(User)\
+    .options(selectinload(User.applications))\
+    .all()  # 2 queries total: users, then all apps
+
+# Or a single JOIN query
+users_with_apps = await db.fetch_all("""
+  SELECT u.id, u.name,
+         a.id AS app_id, a.status
+  FROM   users u
+  LEFT JOIN applications a ON a.user_id = u.id
+  WHERE  u.tenant_id = $1
+""", tenant_id)  # 1 query, all data</pre>
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">applyGOAT exposure</span>
+    Any endpoint that returns a list of users with their applications or cover letters is a classic N+1 risk. In FastAPI with async SQLAlchemy or asyncpg, use <code>selectinload</code> for ORM, or write explicit JOIN queries. Log slow requests in production — N+1 usually looks like many fast queries, not one slow one, which is why it hides in p50 but kills p99 and total DB load.
+  </div>
+
+  <h2>Optimization #4 — EXISTS vs IN vs JOIN (for filtering)</h2>
+
+  <table>
+    <thead>
+      <tr><th>Pattern</th><th>How it works</th><th>Performance</th><th>NULL safety</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>WHERE id IN (SELECT ...)</code></td>
+        <td>Evaluates inner query, creates a list, checks each outer row against the list.</td>
+        <td>OK for small lists. Risk: if any inner value is NULL, can return zero rows silently.</td>
+        <td>Unsafe with NULLs</td>
+      </tr>
+      <tr>
+        <td><code>WHERE EXISTS (SELECT 1 FROM ... WHERE ...)</code></td>
+        <td>For each outer row, checks if the inner query returns at least one row. Short-circuits on first match.</td>
+        <td>Excellent for semi-joins. NULL-safe. Modern planners convert IN to EXISTS anyway.</td>
+        <td>Safe</td>
+      </tr>
+      <tr>
+        <td><code>INNER JOIN</code></td>
+        <td>Combines tables, returns only matching rows. One pass with hash or merge join.</td>
+        <td>Best when you also need columns from the joined table. Avoids correlated subquery.</td>
+        <td>Safe</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <pre><code>-- Three equivalent queries: "users who have at least one application"
+
+-- Option A: IN (can have NULL trap)
+SELECT id FROM users WHERE id IN (SELECT user_id FROM applications);
+
+-- Option B: EXISTS (recommended for filtering)
+SELECT id FROM users u WHERE EXISTS (
+  SELECT 1 FROM applications a WHERE a.user_id = u.id
+);
+
+-- Option C: JOIN (best when you need application data too)
+SELECT DISTINCT u.id
+FROM users u
+JOIN applications a ON a.user_id = u.id;</code></pre>
+
+  <p>For pure filtering (you only need data from the outer table), EXISTS is the safest and most explicit. PostgreSQL's planner typically generates the same plan for EXISTS and IN, but EXISTS is clearer in intent and avoids the NULL pitfall.</p>
+
+
+  <h2>Optimization #5 — Pagination: OFFSET is a Trap</h2>
+  <p>The most common pagination pattern is offset-based. It feels correct but is a performance disaster at large page numbers.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">OFFSET pagination (gets worse with page number)</div>
+      <pre class="bad-good-code">-- Page 1: fast
+SELECT * FROM applications
+WHERE tenant_id = 'goat-001'
+ORDER BY created_at DESC
+LIMIT 20 OFFSET 0;
+
+-- Page 500: must scan and discard 9,980 rows
+SELECT * FROM applications
+WHERE tenant_id = 'goat-001'
+ORDER BY created_at DESC
+LIMIT 20 OFFSET 9980;
+-- Cost grows linearly with page number</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Cursor-based pagination (constant cost)</div>
+      <pre class="bad-good-code">-- First page
+SELECT * FROM applications
+WHERE tenant_id = 'goat-001'
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+-- Remember last row: {created_at: T, id: X}
+
+-- Next page — filter by the cursor
+SELECT * FROM applications
+WHERE tenant_id = 'goat-001'
+  AND (created_at, id) < ('2024-01-15T10:30:00', 'abc-123')
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+-- Index can jump directly to that point — O(log n)</pre>
+    </div>
+  </div>
+
+  <p><strong>Why OFFSET is slow:</strong> PostgreSQL must scan and discard all rows before the offset point. OFFSET 9980 = scan 10,000 rows, return 20, throw away 9,980. Cost grows O(offset). At page 500 with 20 rows per page, you're scanning 10,000 rows per request.</p>
+
+  <p><strong>Cursor pagination trade-offs:</strong> You can't jump to "page 500" directly. You must page forward sequentially. This is fine for "load more" or infinite scroll (most real-world UIs). For admin UIs needing random page access, OFFSET may be acceptable if the dataset is bounded.</p>
+
+  <div class="callout">
+    <span class="callout-label">Compound cursor key</span>
+    Always include a tiebreaker (like <code>id</code>) in the cursor alongside your sort key (<code>created_at</code>). If multiple rows share the same timestamp, a single-key cursor is ambiguous and you'll skip or duplicate rows. The compound cursor <code>(created_at, id)</code> is always unique.
+  </div>
+
+
+  <h2>Optimization #6 — Covering Indexes (Index-Only Scans)</h2>
+  <p>When every column a query needs is included in the index, PostgreSQL never touches the heap (the table itself). This is an <strong>index-only scan</strong> — the fastest possible read.</p>
+
+  <pre><code>-- Query: summary of open applications per tenant
+SELECT tenant_id, COUNT(*) AS total
+FROM   applications
+WHERE  status = 'open'
+GROUP BY tenant_id;
+
+-- Standard index on (status): planner uses index to find open rows,
+-- then must fetch heap pages for tenant_id values — two I/Os per row
+
+-- Covering index: include tenant_id in the index
+CREATE INDEX idx_apps_status_covering
+ON applications (status) INCLUDE (tenant_id);
+-- Now the planner reads tenant_id directly from the index
+-- No heap access needed — index-only scan</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">INCLUDE vs part of the key</span>
+    <code>INCLUDE (tenant_id)</code> stores tenant_id in the index leaf pages but NOT in the tree nodes — it's not searchable. This keeps the index tree compact and efficient, while still allowing the value to be read without a heap fetch. If you put tenant_id in the key itself, it becomes part of the sort order (potentially changing which queries can use the index).
+  </div>
+
+
+  <h2>Optimization #7 — Partial Indexes</h2>
+  <p>A partial index indexes only the rows satisfying a WHERE clause. Smaller, faster, more cache-friendly than a full index.</p>
+
+  <pre><code>-- 90% of applications are 'closed'. Most queries are for 'open' ones.
+-- A full index on status is large and mostly useless.
+
+-- Partial index: only open applications
+CREATE INDEX idx_apps_open
+ON applications (tenant_id, created_at DESC)
+WHERE status = 'open';
+
+-- This index is tiny (10% of rows), fits in cache easily,
+-- and is perfectly targeted for the most common query pattern.
+
+-- The query must include the partial condition to use it:
+SELECT * FROM applications
+WHERE  tenant_id = 'goat-001'
+  AND  status = 'open'   -- required for index use
+ORDER BY created_at DESC;</code></pre>
+
+  <p>Use partial indexes when a large fraction of rows are rarely queried (soft-deleted rows, completed jobs, archived records) and your hot queries always filter on that condition.</p>
+
+
+  <h2>Optimization #8 — SELECT * is Expensive</h2>
+  <p>Selecting all columns prevents index-only scans, sends unnecessary data over the wire, and increases memory pressure on the application server.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">Never do this in production</div>
+      <pre class="bad-good-code">SELECT * FROM applications
+WHERE tenant_id = 'goat-001';
+-- Fetches all columns including large JSONB blobs,
+-- resume_content text, metadata, etc.
+-- Cannot use index-only scans
+-- Transfers MB of data per request</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Select only what you need</div>
+      <pre class="bad-good-code">SELECT id, status, job_title, created_at
+FROM   applications
+WHERE  tenant_id = 'goat-001'
+ORDER BY created_at DESC
+LIMIT 20;
+-- Minimal data transfer
+-- Allows covering/index-only scans
+-- Faster serialization in FastAPI</pre>
+    </div>
+  </div>
+
+
+  <h2>Optimization #9 — Batching Writes</h2>
+  <p>Individual INSERT statements have overhead: each one parses, plans, and executes as a separate transaction. Batch inserts reduce this dramatically.</p>
+
+  <div class="bad-good">
+    <div class="bad-good-card">
+      <div class="bad-good-label bad">1000 individual INSERTs</div>
+      <pre class="bad-good-code"># Each INSERT is a round trip + transaction
+for record in records:
+    await db.execute(
+        "INSERT INTO events(user_id, type) VALUES($1, $2)",
+        record.user_id, record.type
+    )
+# 1000 round trips, 1000 transactions</pre>
+    </div>
+    <div class="bad-good-card">
+      <div class="bad-good-label good">Bulk INSERT</div>
+      <pre class="bad-good-code"># One round trip, one transaction
+await db.executemany(
+    "INSERT INTO events(user_id, type) VALUES($1, $2)",
+    [(r.user_id, r.type) for r in records]
+)
+
+# Or COPY for very large datasets (fastest)
+await conn.copy_records_to_table(
+    'events',
+    records=[(r.user_id, r.type) for r in records],
+    columns=['user_id', 'type']
+)</pre>
+    </div>
+  </div>
+
+  <p><code>COPY</code> is PostgreSQL's bulk load mechanism — bypasses most of the per-row overhead including index update batching. For importing thousands of rows, it's 10–100× faster than individual INSERTs.</p>
+
+
+  <h2>The Optimization Workflow</h2>
+  <p>This is the sequence for diagnosing any slow query in production. Do it in this order — don't skip steps.</p>
+
+  <ol>
+    <li><strong>Find the target:</strong> <code>pg_stat_statements ORDER BY total_exec_time DESC</code>. Optimize what the data says is expensive, not what feels slow.</li>
+    <li><strong>Run EXPLAIN ANALYZE:</strong> See the actual plan. Identify the slow node (highest actual time).</li>
+    <li><strong>Check for missing indexes:</strong> Seq Scan on a large table with a selective WHERE clause? Add an index on the filter column(s).</li>
+    <li><strong>Check for index-killing patterns:</strong> Function on column? Type mismatch? Rewrite the query.</li>
+    <li><strong>Check statistics:</strong> Estimated rows ≪ actual rows? Run ANALYZE.</li>
+    <li><strong>Check memory:</strong> Hash join with Batches &gt; 1? Sort with disk spill? Increase work_mem for the session.</li>
+    <li><strong>Verify:</strong> Re-run EXPLAIN ANALYZE and confirm actual time improved.</li>
+  </ol>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Classic trap</div>
+          <div class="playbook-q-text">"We have an index on the email column but this query is slow: <code>WHERE LOWER(email) = LOWER($1)</code>. Why?"</div>
+          <div class="playbook-q-probe">Follow-up: "How would you fix it without changing the query?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "The index is on the raw email column. The query applies LOWER() to the column before comparing, which means PostgreSQL can't use the index — it has to compute LOWER(email) for every row and compare the result. The index stores the original values, not the lowercased ones, so it's useless for this predicate."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Create an expression index: <code>CREATE INDEX idx_users_email_lower ON users (LOWER(email))</code>. PostgreSQL stores the lowercased value in this index. Now the planner matches the LOWER(email) in the query to the LOWER(email) in the index and uses it. The query doesn't need to change at all — you just need the expression index to match the expression in the predicate."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Pagination</div>
+          <div class="playbook-q-text">"Your 'view all applications' page gets slower as users scroll further. Why, and how do you fix it?"</div>
+          <div class="playbook-q-probe">Follow-up: "What are the trade-offs of cursor-based vs offset pagination?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "This is offset pagination. The query is: LIMIT 20 OFFSET (page × 20). PostgreSQL must scan and discard all rows before the offset — OFFSET 9980 means reading 10,000 rows to return 20. Cost is O(offset), so it grows linearly with page number. At page 500 you're doing 500× more work than page 1. Switch to keyset/cursor pagination: store the last row's sort key, then filter by it on the next request. The planner can jump directly to that position using the index — constant O(log n) regardless of page number."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Cursor pagination: constant performance, can't jump to arbitrary pages, more complex to implement, cursor must encode the full sort key. Offset pagination: linear performance degradation, can jump to page N directly, trivial to implement. In practice: cursor for infinite scroll / load-more UIs (almost all production apps), offset only for bounded admin UIs where users genuinely need page 47 of 50. One gotcha: cursor must include a tiebreaker column (usually id) alongside the sort key, otherwise tied sort values create ambiguous cursors and you lose or duplicate rows."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — N+1</div>
+          <div class="playbook-q-text">"What is the N+1 problem and how does it appear in a FastAPI app?"</div>
+          <div class="playbook-q-probe">Follow-up: "How does SQLAlchemy's lazy loading cause it and how do you fix it?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "N+1: you fetch N parent records in 1 query, then issue 1 additional query per parent to load related data. Total: N+1 queries. In FastAPI it appears whenever you iterate over a list of objects and access a relationship inside the loop — with SQLAlchemy lazy loading, each relationship access fires a separate SELECT. At N=100 users this is 101 database round trips where 2 would suffice. The symptom in production is many fast queries (not one slow one) that together add up to high total DB time and high p99 latency."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "SQLAlchemy lazy loading is the default — accessing a relationship on an ORM object fires a SELECT when the attribute is first accessed. Fix options: (1) <code>selectinload</code> — loads all related objects in a second bulk query (2 queries total, regardless of N). (2) <code>joinedload</code> — loads via LEFT JOIN in the original query (1 query, can produce large result sets with many-to-many). (3) Write explicit JOIN queries with asyncpg/databases and skip the ORM for read-heavy endpoints. I use selectinload by default for one-to-many, joinedload for many-to-one (parent fetch), and raw SQL for complex analytical queries."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Optimization priority</span>
+    Fix in this order: (1) function on indexed column — one-line fix, huge gain. (2) N+1 — usually an ORM config issue. (3) Missing index — EXPLAIN ANALYZE will show the seq scan. (4) Offset pagination — architectural change, do it for high-traffic endpoints first. (5) covering/partial indexes — micro-optimization for high-frequency queries.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0005-query-execution.html">Lesson 05 — Query Execution &amp; the Planner</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0007-normalization.html">Lesson 07 — Normalization</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to review a specific query from applyGOAT for N+1 issues? Unsure about when to use selectinload vs joinedload vs raw SQL in your FastAPI codebase? Want to design cursor pagination for your applications list endpoint?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 06 &nbsp;·&nbsp; Query Optimization &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A column 'email' has a B-tree index. The query uses WHERE LOWER(email) = 'tom@example.com'. Does the index get used?",
+    options: [
+      "Yes — B-tree indexes are case-insensitive by default",
+      "No — applying LOWER() to the column prevents index use. The planner must compute LOWER(email) for every row.",
+      "Yes — PostgreSQL automatically creates expression indexes for common functions",
+      "No — string columns cannot use B-tree indexes"
+    ],
+    answer: 1,
+    explanation: "Wrapping an indexed column in a function prevents index use. The index stores original values, not the transformed ones. Fix: create an expression index on LOWER(email), or always store emails lowercased and compare directly."
+  },
+  {
+    q: "A FastAPI endpoint returns a list of users with their applications. You fetch users in one query then loop and query applications per user. This is called?",
+    options: [
+      "Eager loading — best practice for related data",
+      "The N+1 problem — N+1 queries where 1-2 would suffice",
+      "Lazy aggregation — deferred computation pattern",
+      "Connection pooling — each query uses a separate connection"
+    ],
+    answer: 1,
+    explanation: "N+1: 1 query for users, then N queries for applications. At N=1000 users, that's 1001 DB round trips. Fix: use selectinload (SQLAlchemy) for 2 queries total, or a single JOIN query."
+  },
+  {
+    q: "You're on page 500 of an OFFSET-paginated result (LIMIT 20 OFFSET 9980). What does PostgreSQL actually do?",
+    options: [
+      "Jumps directly to row 9980 using the index — O(log n)",
+      "Scans and discards 9,980 rows before returning 20 — O(offset)",
+      "Caches pages in a cursor so page 500 costs the same as page 1",
+      "Returns an error — offset values above 1000 are not supported"
+    ],
+    answer: 1,
+    explanation: "OFFSET is not a skip — it's scan-and-discard. PostgreSQL must process all rows before the offset point. OFFSET 9980 = read 10,000 rows, return 20, throw away 9,980. Cost grows linearly with page number. Use cursor/keyset pagination for constant-cost paging."
+  },
+  {
+    q: "What's a covering index and what scan type does it enable?",
+    options: [
+      "An index that covers all columns in the table — replaces a full table scan",
+      "An index that includes all columns needed by a query — enables index-only scans (no heap access)",
+      "An index that covers multiple tables — used for cross-table joins",
+      "An index with a WHERE clause — covers only a subset of rows"
+    ],
+    answer: 1,
+    explanation: "A covering index includes all columns the query needs (either as key columns or via INCLUDE). PostgreSQL can answer the query entirely from the index, never touching the heap. This is called an index-only scan — the fastest read path, especially for hot, frequently-run queries."
+  },
+  {
+    q: "You need to create an index for 'open' applications which are 5% of your 10M row table. Most queries filter WHERE status = 'open'. What index type is most efficient?",
+    options: [
+      "A full B-tree index on (status, tenant_id) — covers all cases",
+      "A partial index: CREATE INDEX ... WHERE status = 'open' — only indexes the 5% you query",
+      "A hash index on status — O(1) lookup for the equality filter",
+      "A BRIN index on status — best for low-cardinality columns"
+    ],
+    answer: 1,
+    explanation: "A partial index with WHERE status = 'open' indexes only 500K rows instead of 10M. It's 20x smaller, fits in cache, builds faster, and requires less maintenance on writes. The query planner uses it automatically when the query includes AND status = 'open'."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

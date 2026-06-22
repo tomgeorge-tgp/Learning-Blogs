@@ -1,0 +1,737 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 02 — Database Indexing & Internals</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <!-- Header -->
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 02</div>
+    <div class="pillar-badge">Database Internals</div>
+    <h1 class="lesson-title">Database Indexing<br>& Internals</h1>
+    <p class="lesson-subtitle">Why queries are slow, how indexes fix it, and what Pinecone's HNSW actually does.</p>
+  </header>
+
+  <!-- The problem -->
+  <h2>The Problem Without Indexes</h2>
+  <p>applyGOAT has 20,000 users. Each user may have dozens of job applications. That's potentially <strong>millions of rows</strong> in your <code>applications</code> table.</p>
+  <p>Without an index, a query like:</p>
+  <pre><code>SELECT * FROM applications WHERE user_id = 'abc-123';</code></pre>
+  <p>…forces PostgreSQL to read <em>every row</em> in the table, comparing each one. That's a <strong>full table scan — O(n)</strong>. At 1M rows, that's 1M comparisons per query.</p>
+  <div class="callout warning">
+    <span class="callout-label">The rule</span>
+    A full table scan is fine for small tables. At production scale — 100K+ rows — unindexed queries on filtered columns will kill your database.
+  </div>
+
+  <!-- B-Tree -->
+  <h2>B-Tree Index — The Default</h2>
+  <p>PostgreSQL and MongoDB both default to <strong>B-Tree</strong> (Balanced Tree) indexes. This is what <code>CREATE INDEX</code> gives you unless you specify otherwise.</p>
+
+  <h3>Start with the real table</h3>
+  <p>Say applyGOAT's <code>applications</code> table has these 9 rows. The <code>id</code> column is an auto-increment integer — the primary key, which PostgreSQL automatically indexes with a B-tree.</p>
+
+  <table>
+    <thead>
+      <tr><th>id (PK)</th><th>user_id</th><th>job_title</th><th>status</th><th>score</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>3</td><td>u-101</td><td>Backend Eng</td><td>applied</td><td>78</td></tr>
+      <tr><td>7</td><td>u-204</td><td>ML Engineer</td><td>interviewing</td><td>91</td></tr>
+      <tr><td>12</td><td>u-101</td><td>DevOps Eng</td><td>applied</td><td>65</td></tr>
+      <tr><td>19</td><td>u-307</td><td>Frontend Eng</td><td>rejected</td><td>55</td></tr>
+      <tr><td>25</td><td>u-204</td><td>Backend Eng</td><td>offered</td><td>95</td></tr>
+      <tr><td>31</td><td>u-101</td><td>SRE</td><td>applied</td><td>72</td></tr>
+      <tr><td>44</td><td>u-502</td><td>Backend Eng</td><td>applied</td><td>80</td></tr>
+      <tr><td>58</td><td>u-307</td><td>Data Eng</td><td>interviewing</td><td>88</td></tr>
+      <tr><td>63</td><td>u-502</td><td>ML Engineer</td><td>applied</td><td>70</td></tr>
+    </tbody>
+  </table>
+
+  <p>The rows are stored in the heap (the actual table file) in <strong>insertion order</strong> — not sorted by id. The B-tree index is a separate data structure that keeps the id values sorted and points back to the heap row location (called a <strong>heap pointer / ctid</strong>).</p>
+
+  <h3>What the B-tree index looks like on disk</h3>
+  <p>PostgreSQL organises the B-tree into <strong>pages</strong> (fixed-size blocks, default 8KB). Each page is a node in the tree. Internal nodes hold <strong>keys + child pointers</strong>. Leaf nodes hold <strong>keys + heap pointers</strong> to the actual table rows.</p>
+
+  <pre><code>CREATE INDEX idx_applications_id ON applications (id);
+
+-- The resulting B-tree (simplified to show structure):
+
+                     ┌─────────────────┐
+          ROOT NODE  │    [25]          │   ← one key, two children
+                     └────────┬────────┘
+                    ┌─────────┴──────────┐
+                    ▼                    ▼
+           ┌─────────────┐     ┌──────────────┐
+ INTERNAL  │  [12, 19]   │     │   [44, 58]   │
+  NODE     └──┬───┬───┬──┘     └──┬────┬────┬─┘
+              │   │   │           │    │    │
+     ┌────────┘ ┌─┘ ┌─┘     ┌───┘  ┌──┘  ┌─┘
+     ▼          ▼   ▼       ▼      ▼     ▼
+  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
+  │ 3    │ │ 12   │ │ 19   │ │ 25   │ │ 44   │ │ 58   │
+  │ 7    │ │      │ │      │ │ 31   │ │      │ │ 63   │
+  │      │ │      │ │      │ │      │ │      │ │      │
+  │→heap │ │→heap │ │→heap │ │→heap │ │→heap │ │→heap │
+  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘
+  LEAF      LEAF     LEAF     LEAF     LEAF     LEAF
+
+  Leaf nodes are linked: [3,7] → [12] → [19] → [25,31] → [44] → [58,63]
+                         ←─────────────────────────────────────────────→
+                                  sorted order, linked list</code></pre>
+
+  <p>Three things to notice:</p>
+  <ul>
+    <li><strong>Root → Internal → Leaf:</strong> Every lookup starts at the root and descends. The tree has fixed depth — always the same number of hops regardless of which key you look up.</li>
+    <li><strong>Internal nodes are routing guides:</strong> They don't point to heap rows. They tell you which child branch contains your key.</li>
+    <li><strong>Leaf nodes are linked:</strong> All leaf nodes form a sorted linked list left-to-right. This is what makes range scans fast.</li>
+  </ul>
+
+  <h3>Step-by-step lookup: <code>WHERE id = 31</code></h3>
+  <p>You run: <code>SELECT * FROM applications WHERE id = 31;</code></p>
+
+  <pre><code>Step 1 — Start at ROOT [25]
+  Is 31 > 25?  YES → go right child
+
+Step 2 — Arrive at INTERNAL NODE [44, 58]
+  Is 31 < 44?  YES → go left child (the branch before 44)
+
+Step 3 — Arrive at LEAF NODE [25, 31]
+  Scan the leaf: find key 31
+  Read heap pointer: (page 4, slot 2)  ← ctid
+
+Step 4 — Fetch from heap
+  Go directly to page 4, slot 2 in the table file
+  Read the full row: {id:31, user_id:'u-101', job_title:'SRE', ...}
+
+Total: 3 node reads + 1 heap fetch = 4 I/Os
+Without index: scan all 9 rows = 9 comparisons (and at 1M rows, 1M comparisons)</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">Why O(log n)?</span>
+    Each node visit eliminates half (or more) of the remaining candidates by following the correct branch. At 9 rows the tree has 3 levels. At 1 million rows it has ~20 levels. At 1 billion rows it has ~30. The number of levels grows logarithmically with row count — that's O(log n).
+  </div>
+
+  <h3>What the heap pointer (ctid) actually is</h3>
+  <p>Every leaf node entry stores a <strong>ctid</strong> — a physical location in the heap file, in the format <code>(page_number, slot_number)</code>. After the B-tree lookup finds the matching key, PostgreSQL uses the ctid to jump directly to that physical page. No scanning — one direct I/O.</p>
+
+  <pre><code>-- You can see ctids in PostgreSQL
+SELECT ctid, id, user_id, status
+FROM   applications
+ORDER BY id;
+
+-- Output:
+--  ctid   | id | user_id | status
+-- --------+----+---------+--------------
+-- (0,1)   |  3 | u-101   | applied
+-- (0,2)   |  7 | u-204   | interviewing
+-- (1,1)   | 12 | u-101   | applied
+-- (1,2)   | 19 | u-307   | rejected
+-- (2,1)   | 25 | u-204   | offered
+-- ...
+-- ctid (1,1) means: page 1, slot 1 of the table's heap file</code></pre>
+
+  <h3>Range scan: <code>WHERE id BETWEEN 12 AND 44</code></h3>
+  <p>This is where the leaf node linked list matters.</p>
+
+  <pre><code>Step 1 — B-tree lookup: find the leaf containing id = 12
+  Root [25] → Internal [12, 19] → Leaf [12]   (3 node reads)
+
+Step 2 — Scan forward through linked leaf nodes
+  Leaf [12]  → read id=12  ✓ (in range)
+  Leaf [19]  → read id=19  ✓
+  Leaf [25, 31] → read id=25 ✓, id=31 ✓
+  Leaf [44]  → read id=44  ✓
+  Leaf [58, 63] → id=58 > 44 → STOP
+
+Step 3 — Fetch the 5 matching rows from the heap via their ctids
+
+Total: 3 node reads to find start + 5 sequential leaf reads + 5 heap fetches
+Compare to full table scan: read all 9 rows regardless</code></pre>
+
+  <p>At production scale with millions of rows and a date range covering 10,000 rows, the difference is: ~20 tree reads to find the start + 10,000 leaf reads + 10,000 heap fetches vs. scanning millions of rows. Orders of magnitude faster.</p>
+
+  <h3>What happens when a new row is inserted</h3>
+  <p>Insert <code>id = 22</code>. PostgreSQL must update the B-tree to keep it sorted and balanced.</p>
+
+  <pre><code>Before insert:
+  Leaf [19] — has space → INSERT id=22 here
+
+After insert:
+  Leaf [19, 22] — sorted within the leaf
+
+If the leaf is FULL (no space left):
+  PostgreSQL SPLITS the leaf into two:
+    Leaf A: [19]
+    Leaf B: [22]
+  And promotes the split key (22) up to the parent internal node.
+  If the parent is also full, it splits too — cascading up to the root.
+  If the root splits, a new root is created and the tree gains one level.
+
+This is the write overhead of indexes:
+  Every INSERT touches the B-tree (find the right leaf + insert + possibly split)
+  Every UPDATE on the indexed column: mark old entry dead + insert new entry
+  Every DELETE: mark the leaf entry as dead (vacuumed later)</code></pre>
+
+  <div class="callout warning">
+    <span class="callout-label">Write overhead is real</span>
+    If you have 8 indexes on <code>applications</code>, every INSERT must update all 8 B-trees. Every UPDATE of an indexed column marks the old entry dead and inserts a new one in all affected B-trees. This is why bulk import operations often drop indexes first, import the data, then rebuild the indexes — it's dramatically faster than maintaining them row by row.
+  </div>
+
+  <h3>Why B-Tree supports range queries</h3>
+  <p>Because leaf nodes are in sorted order and linked, the engine finds the start of the range via the tree (O(log n)) then scans forward through leaf nodes — never going back up the tree. This is why you can index on <code>created_at</code> and efficiently run:</p>
+  <pre><code>SELECT * FROM applications
+WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31';</code></pre>
+
+  <!-- UUID / String note -->
+  <div class="callout" style="margin-top:1.5rem">
+    <span class="callout-label">Note — UUID or string indexes: same tree, different ordering</span>
+    <p style="margin-top:0.5rem;margin-bottom:0.75rem">The B-tree mechanism is <strong>identical</strong> — sort the values, build the tree, navigate root → internal → leaf. The only difference is what "sorted" means.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>Strings use lexicographic (dictionary) order</strong> — byte-by-byte, left to right. So a B-tree on <code>job_title</code> sorts like this:</p>
+    <pre style="margin:0 0 0.75rem;font-size:0.78rem"><code>'Backend Eng'   → comes first  (B < D < F < M < S)
+'DevOps Eng'
+'Frontend Eng'
+'ML Engineer'
+'SRE'</code></pre>
+
+    <p style="margin-bottom:0.5rem">The tree looks and navigates exactly the same as the integer example — just with string comparisons instead of number comparisons at each node.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>UUIDs work the same way</strong> — sorted lexicographically on their string representation. A B-tree on <code>user_id</code> (UUID) would sort:</p>
+    <pre style="margin:0 0 0.75rem;font-size:0.78rem"><code>'2f8a1c3d-...'   ← leaf 1
+'5e3b9f21-...'   ← leaf 2
+'8c7d4a0e-...'   ← leaf 3
+'a1f2e3b4-...'   ← leaf 4</code></pre>
+
+    <p style="margin-bottom:0.5rem"><strong>The problem with UUID v4 (random UUIDs)</strong> — and this is the one real difference that matters:</p>
+    <p style="margin-bottom:0.5rem">With integers (<code>id = 1, 2, 3, 4...</code>), new rows always have the <em>largest</em> id. Every insert goes into the <em>rightmost</em> leaf — the one that's already in memory and being written to. Efficient, sequential writes.</p>
+    <p style="margin-bottom:0.5rem">With UUID v4, each new id is random — it lands in a <em>random position</em> in the sorted tree. The target leaf is almost certainly not in the buffer pool, requiring a disk read. Then the insert may split that leaf, requiring a disk write to two pages. At high write volume this causes <strong>index fragmentation</strong>: constant random I/O and page splits across the whole tree.</p>
+
+    <pre style="margin:0 0 0.75rem;font-size:0.78rem"><code>UUID v4 (random) inserts:
+  Insert 'f7c3...' → goes into the middle of the tree, page split
+  Insert '2a9b...' → goes near the start, different split
+  Insert 'c4e1...' → somewhere else entirely
+  → Every insert is a random read + write across all index pages
+
+UUID v7 (time-ordered) inserts:
+  Insert '018f3a1b-...' (Jan 1) → rightmost leaf
+  Insert '018f3b4c-...' (Jan 2) → rightmost leaf (same or next)
+  Insert '018f3c77-...' (Jan 3) → rightmost leaf
+  → Behaves like an auto-increment integer — sequential, fast</code></pre>
+
+    <p style="margin-bottom:0"><strong>In applyGOAT:</strong> if you use PostgreSQL's <code>gen_random_uuid()</code> (UUID v4) as a primary key, your primary key index will fragment under write load. Switch to UUID v7 (<code>uuid_generate_v7()</code> via the <code>pg_uuidv7</code> extension, or <code>gen_random_uuid()</code> with a manual time prefix) or use a <code>BIGSERIAL</code> for high-write tables. UUID v7 gives you the global uniqueness of a UUID <em>and</em> the sequential write performance of an integer.</p>
+  </div>
+
+  <!-- Hash Index -->
+  <h2>Hash Index — Fast Equality, Nothing Else</h2>
+  <p>A hash index applies a hash function to the indexed value and stores the result in a hash table. Lookup is <strong>O(1)</strong> — constant time, regardless of table size.</p>
+
+  <table>
+    <thead>
+      <tr><th>Index type</th><th>Lookup</th><th>Range query</th><th>Sort</th><th>Best for</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>B-Tree</strong></td>
+        <td>O(log n)</td>
+        <td>✓</td>
+        <td>✓</td>
+        <td>Most queries — equality, range, sort</td>
+      </tr>
+      <tr>
+        <td><strong>Hash</strong></td>
+        <td>O(1)</td>
+        <td>✗</td>
+        <td>✗</td>
+        <td>Exact equality only (e.g. session token lookup)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Why hash can't range query</span>
+    Hashing destroys ordering. <code>hash('apple')</code> and <code>hash('apricot')</code> have no relationship — they could be anywhere in the hash table. There's no "start scanning from here" concept.
+  </div>
+
+  <!-- Composite indexes -->
+  <h2>Composite Indexes — Column Order Matters</h2>
+  <p>A composite index covers multiple columns. In applyGOAT's multi-tenant setup, you almost certainly need these.</p>
+
+  <pre><code>CREATE INDEX idx_apps_tenant_status_date
+ON applications(tenant_id, status, created_at DESC);</code></pre>
+
+  <h3>The left-prefix rule</h3>
+  <p>This index can be used for queries that filter on columns <strong>from left to right, without skipping</strong>:</p>
+
+  <table>
+    <thead>
+      <tr><th>Query filter</th><th>Uses index?</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>WHERE tenant_id = ?</code></td>
+        <td>✓ Yes</td>
+        <td>Uses first column — left prefix</td>
+      </tr>
+      <tr>
+        <td><code>WHERE tenant_id = ? AND status = ?</code></td>
+        <td>✓ Yes</td>
+        <td>Uses first two columns in order</td>
+      </tr>
+      <tr>
+        <td><code>WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC</code></td>
+        <td>✓ Yes (fully covered)</td>
+        <td>All three columns used — no sort needed</td>
+      </tr>
+      <tr>
+        <td><code>WHERE status = ?</code></td>
+        <td>✗ No</td>
+        <td>Skips first column — index can't be used</td>
+      </tr>
+      <tr>
+        <td><code>WHERE tenant_id = ? AND created_at > ?</code></td>
+        <td>~ Partial</td>
+        <td>Uses tenant_id to find the right tenant's rows, but then must scan all of them to filter by created_at — because status sits between them in the index and scrambles the date order</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Explain the partial case -->
+  <h3>Why <code>WHERE tenant_id = ? AND created_at > ?</code> is only partial — step by step</h3>
+
+  <p>Think of this index like a <strong>physical filing cabinet</strong>:</p>
+  <ul>
+    <li><strong>Drawer</strong> = tenant_id</li>
+    <li><strong>Folders inside that drawer</strong> = status (applied, interviewing, offered, rejected)</li>
+    <li><strong>Papers inside each folder</strong> = rows sorted by created_at newest-first</li>
+  </ul>
+
+  <p>This is what the index leaf nodes actually contain for <code>goat-001</code>:</p>
+
+  <pre><code>Position │ tenant_id  │ status        │ created_at
+─────────┼────────────┼───────────────┼────────────
+1        │ goat-001   │ applied       │ 2024-06-15  ← row A
+2        │ goat-001   │ applied       │ 2024-05-10  ← row B
+3        │ goat-001   │ applied       │ 2024-03-01  ← row C
+4        │ goat-001   │ interviewing  │ 2024-06-20  ← row D
+5        │ goat-001   │ interviewing  │ 2024-04-05  ← row E
+6        │ goat-001   │ offered       │ 2024-06-18  ← row F
+7        │ goat-001   │ offered       │ 2024-01-12  ← row G
+8        │ goat-001   │ rejected      │ 2024-05-30  ← row H
+9        │ goat-001   │ rejected      │ 2024-02-20  ← row I</code></pre>
+
+  <p>Now you run:</p>
+  <pre><code>WHERE tenant_id = 'goat-001' AND created_at > '2024-05-01'</code></pre>
+
+  <p><strong>Step 1 — tenant_id filter ✓ works perfectly.</strong><br>
+  PostgreSQL jumps straight to position 1, knows all <code>goat-001</code> rows end at position 9. Fast, no scan needed.</p>
+
+  <p><strong>Step 2 — now find <code>created_at > 2024-05-01</code> within those 9 rows.</strong><br>
+  Look at just the dates column:</p>
+
+  <pre><code>Position │ created_at   │ After May 1?
+─────────┼──────────────┼──────────────
+1        │ 2024-06-15   │  ✓ YES
+2        │ 2024-05-10   │  ✓ YES
+3        │ 2024-03-01   │  ✗ NO
+4        │ 2024-06-20   │  ✓ YES
+5        │ 2024-04-05   │  ✗ NO
+6        │ 2024-06-18   │  ✓ YES
+7        │ 2024-01-12   │  ✗ NO
+8        │ 2024-05-30   │  ✓ YES
+9        │ 2024-02-20   │  ✗ NO</code></pre>
+
+  <p>The dates go: <strong>YES → YES → NO → YES → NO → YES → NO → YES → NO</strong>. They jump up and down with no pattern.</p>
+
+  <p>Why? Because the dates are only sorted <em>inside each status folder</em>, not across all folders:</p>
+
+  <pre><code>applied:      Jun → May → Mar   (sorted within this folder only)
+interviewing: Jun → Apr         (resets — sorted within this folder only)
+offered:      Jun → Jan         (resets again)
+rejected:     May → Feb         (resets again)</code></pre>
+
+  <p>The rows that match <code>created_at > '2024-05-01'</code> (rows A, B, D, F, H) are <strong>scattered across four different folders</strong> — not sitting together in one place. There is no single point in the index where PostgreSQL can say <em>"everything from here onwards is after May 1."</em></p>
+
+  <p>So PostgreSQL is forced to:</p>
+  <ol>
+    <li>Use the index to jump to all <code>goat-001</code> rows — <strong>9 rows</strong></li>
+    <li>Check <code>created_at > '2024-05-01'</code> on each of those 9 rows one by one</li>
+  </ol>
+
+  <p>That is what <strong>"partial"</strong> means. The index did half the work (filtered by tenant), then had to resort to a row-by-row check for the date.</p>
+
+  <h3>What the index would need to look like for the date filter to be fully fast</h3>
+
+  <p>If the index was <code>(tenant_id, created_at DESC)</code> — no <code>status</code> in the middle — the same 9 rows would be stored like this:</p>
+
+  <pre><code>Position │ tenant_id  │ created_at
+─────────┼────────────┼────────────
+1        │ goat-001   │ 2024-06-20   ← row D
+2        │ goat-001   │ 2024-06-18   ← row F
+3        │ goat-001   │ 2024-06-15   ← row A
+4        │ goat-001   │ 2024-05-30   ← row H
+5        │ goat-001   │ 2024-05-10   ← row B
+         │            │ ── 2024-05-01 cutoff ──────────── STOP HERE
+6        │ goat-001   │ 2024-04-05   ← row E
+7        │ goat-001   │ 2024-03-01   ← row C
+8        │ goat-001   │ 2024-02-20   ← row I
+9        │ goat-001   │ 2024-01-12   ← row G</code></pre>
+
+  <p>Now dates are in <strong>one clean sorted sequence</strong> with nothing interrupting them. PostgreSQL jumps to the <code>2024-05-01</code> cutoff and takes everything above it — rows 1 to 5. Zero row-by-row checking. <strong>Fully fast.</strong></p>
+
+  <div class="callout warning">
+    <span class="callout-label">The fix — and the trade-off</span>
+    Create a second index with <code>created_at</code> directly after <code>tenant_id</code>:<br><br>
+    <code>CREATE INDEX idx_apps_tenant_date ON applications(tenant_id, created_at DESC);</code><br><br>
+    Now <code>WHERE tenant_id = ? AND created_at > ?</code> is fully fast. But this new index no longer helps queries that filter by <code>status</code>. For two different query patterns you often need <strong>two separate indexes</strong>. That is a normal, expected part of index design — you match each index to the query it serves.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT real example</span>
+    Your multi-tenant queries always filter by <code>tenant_id</code> first. Put it as the first column in every composite index. This isolates tenant data and the query planner can use the index for all downstream filters.
+  </div>
+
+  <!-- PostgreSQL index types -->
+  <h2>PostgreSQL Index Types Beyond B-Tree</h2>
+
+  <table>
+    <thead>
+      <tr><th>Type</th><th>Best for</th><th>Your stack relevance</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>B-Tree</strong> (default)</td>
+        <td>Equality, ranges, sorting on scalars</td>
+        <td>user_id, tenant_id, created_at, status — everything standard</td>
+      </tr>
+      <tr>
+        <td><strong>GIN</strong> (Generalized Inverted)</td>
+        <td>JSONB fields, arrays, full-text search</td>
+        <td>If you store metadata as JSONB in PostgreSQL and query inside it</td>
+      </tr>
+      <tr>
+        <td><strong>GiST</strong></td>
+        <td>Geometric data, full-text, IP ranges</td>
+        <td>Rarely needed in your stack — pgvector uses this for vector search in Postgres</td>
+      </tr>
+      <tr>
+        <td><strong>BRIN</strong> (Block Range)</td>
+        <td>Naturally ordered huge tables (logs, time-series)</td>
+        <td>If you have an append-only audit log or events table — tiny index, fast for time ranges</td>
+      </tr>
+      <tr>
+        <td><strong>Hash</strong></td>
+        <td>Exact equality only</td>
+        <td>Session tokens, API keys — but B-Tree is usually preferred anyway</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- When indexes hurt -->
+  <h2>When Indexes Make Things Worse</h2>
+  <p>Indexes are not free. Every index on a table has a cost:</p>
+  <ul>
+    <li><strong>Write overhead</strong> — every INSERT, UPDATE, DELETE must update all indexes on that table. 10 indexes = 10x index maintenance per write.</li>
+    <li><strong>Storage</strong> — indexes can be as large as the table itself.</li>
+    <li><strong>Index bloat</strong> — UPDATEs don't modify indexes in place; old entries are marked dead and space is reclaimed lazily (VACUUM in PostgreSQL). Heavy update workloads bloat indexes over time.</li>
+    <li><strong>Query planner confusion</strong> — too many indexes and the planner may choose a suboptimal one, or spend time evaluating options.</li>
+  </ul>
+  <div class="callout warning">
+    <span class="callout-label">Rule of thumb</span>
+    Index columns you <em>filter, join, or sort on</em> in frequent queries. Don't index every column. And always check with <code>EXPLAIN ANALYZE</code> — the query planner often surprises you.
+  </div>
+
+  <!-- HNSW / Pinecone -->
+  <h2>HNSW — How Pinecone Indexes Vectors</h2>
+  <p>Pinecone doesn't use B-Trees. Vectors (embeddings from your resume/job description) have hundreds of dimensions. B-Trees don't work in high-dimensional space. Instead, Pinecone uses <strong>HNSW — Hierarchical Navigable Small World</strong>.</p>
+
+  <h3>The core idea</h3>
+  <p>HNSW builds a <strong>multi-layer graph</strong> of vectors:</p>
+  <ul>
+    <li><strong>Top layers</strong>: sparse, long-range connections — a "highway" for fast coarse navigation</li>
+    <li><strong>Bottom layer</strong>: dense, short-range connections — precise local search</li>
+  </ul>
+  <p>To find the nearest neighbours to a query vector, the algorithm enters at the top (sparse) layer, greedily moves toward the closest known node, then descends to lower layers to refine the search.</p>
+
+  <pre><code>Layer 2 (sparse):  A ———————— F ———————— K
+                              |
+Layer 1:           B — C — D — E — F — G — H
+                                   |
+Layer 0 (dense):  ... all vectors with local edges ...</code></pre>
+
+  <h3>Why approximate, not exact?</h3>
+  <p>Exact nearest-neighbor search in 1536 dimensions (OpenAI embedding size) requires comparing the query to every vector — O(n). HNSW trades a small accuracy loss (~1-5%) for <strong>O(log n) approximate search</strong>. For RAG retrieval, "95% accurate nearest neighbor" is indistinguishable from "exact" in practice — the model handles semantic fuzziness anyway.</p>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT / AI Sales Agent</span>
+    When your RAG pipeline queries Pinecone for relevant resume chunks or insurance policy documents, HNSW is what makes that retrieval fast even at hundreds of thousands of vectors. The index is built at upsert time (slow) and queried at runtime (fast). This is the latency-vs-build-time trade-off baked into every vector database.
+  </div>
+
+  <!-- Interview Playbook -->
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <!-- Q1 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Fundamentals</div>
+          <div class="playbook-q-text">"What's the difference between a B-Tree and a hash index? When would you use each?"</div>
+          <div class="playbook-q-probe">Follow-up: "Why can't a hash index support range queries?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "A B-Tree index stores values in sorted order in a balanced tree. Lookups are O(log n) and it supports equality, range queries, and sorting — it's the default for a reason. A hash index hashes the value and stores it in a hash table — O(1) lookups for exact equality, but it can't do range queries or sorting. In practice I default to B-Tree. The only time I'd consider a hash index is for exact-match lookups on high-cardinality columns — session tokens, API keys — where I know I'll never need a range query."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Hashing destroys ordering. <code>hash('2024-01-01')</code> and <code>hash('2024-01-02')</code> produce unrelated values — they could be anywhere in the hash table. There's no concept of 'scan from this point forward.' B-Trees maintain sorted order across leaf nodes, so a range query just finds the start point and walks forward — that's impossible with a hash structure."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q2 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied (this will come up)</div>
+          <div class="playbook-q-text">"You have this query on a 50M row table. How would you index it? <br><code>SELECT * FROM applications WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC LIMIT 20</code>"</div>
+          <div class="playbook-q-probe">Follow-up: "What if status only has 3 possible values — does that change your answer?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "I'd create a composite index on <code>(tenant_id, status, created_at DESC)</code>. This fully covers the query — the planner can use the index to filter by tenant and status, then return rows already sorted by date with no separate sort step. It also benefits from the left-prefix rule: queries filtering on just <code>tenant_id</code> or <code>tenant_id + status</code> can also use this index. In a multi-tenant app like applyGOAT, <code>tenant_id</code> must always be the first column — it isolates each tenant's data in the index and makes all downstream filters within that tenant fast."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Low cardinality on <code>status</code> (only 3 values like 'open', 'closed', 'expired') makes it less selective as a filter — the index will still help because it narrows by tenant first. But if most queries only care about <code>status = 'open'</code>, you could create a <strong>partial index</strong>: <code>CREATE INDEX ... ON applications(tenant_id, created_at DESC) WHERE status = 'open'</code>. This index is smaller (only open rows), faster to build, and more cache-friendly. The trade-off: it only helps queries that filter on that exact status."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q3 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"We added indexes to our table and writes got slower. Why?"</div>
+          <div class="playbook-q-probe">Follow-up: "How would you diagnose which indexes are actually being used?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Every index is a separate data structure that must be kept in sync with the table. On every INSERT, UPDATE, or DELETE, PostgreSQL must update every index on that table — not just the row. Ten indexes means ten index maintenance operations per write. Beyond that, UPDATE on an indexed column doesn't modify in place — it marks the old index entry as dead and creates a new one. Under heavy write load this causes index bloat, which further slows writes and scans. The fix is to audit which indexes are actually used in production and drop the ones that aren't pulling their weight."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "In PostgreSQL, <code>pg_stat_user_indexes</code> shows how many times each index has been scanned. An index with <code>idx_scan = 0</code> over a meaningful time window is almost certainly useless. I'd also run <code>EXPLAIN ANALYZE</code> on the critical queries to see which index the planner chooses and whether it matches what I expected. For indexes the planner ignores, I'd check if column statistics are stale (<code>ANALYZE</code> the table) or if the query shape doesn't match the index's left-prefix."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q4 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q4 — Senior differentiator</div>
+          <div class="playbook-q-text">"You're using Pinecone for vector search. How does it index vectors, and why doesn't it use a B-Tree?"</div>
+          <div class="playbook-q-probe">Follow-up: "What does 'approximate' nearest neighbor mean in practice? Is that a problem for RAG?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Pinecone uses HNSW — Hierarchical Navigable Small World. B-Trees don't work for high-dimensional vectors because there's no meaningful 'sorted order' across hundreds of dimensions — the curse of dimensionality makes tree-based indexing break down. HNSW builds a multi-layer graph: upper layers have sparse, long-range connections for fast coarse navigation, the bottom layer has dense local connections for precision. A query enters at the top, greedily navigates to the closest node, and descends layers to refine. Search is O(log n) — a massive improvement over the O(n) brute-force scan you'd need without an index."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Approximate means HNSW might miss the mathematically closest vector by a tiny margin — typically 1–5% recall loss depending on the <code>ef</code> parameter (search breadth). For RAG this is almost never a problem. The retrieval is feeding context to an LLM that can reason over semantically similar but not identical text. If the top-3 retrieved chunks are 'very similar' rather than 'exactly the nearest 3', the generation quality doesn't meaningfully degrade. Where you'd care about recall is high-stakes deduplication or fraud detection — not document retrieval for generation."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap most candidates have</span>
+    Candidates know indexes exist and make things faster. Senior candidates know <em>why</em> — the tree structure, sorted leaf nodes, left-prefix rule, write overhead, and when to use partial indexes. That's the depth interviewers are probing for.
+  </div>
+
+  <!-- Quick reference -->
+  <h2>Quick Reference</h2>
+  <table>
+    <thead>
+      <tr><th>Scenario</th><th>Index choice</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Standard filter + sort (most cases)</td><td>B-Tree composite: <code>(tenant_id, filter_col, sort_col DESC)</code></td></tr>
+      <tr><td>Exact token/key lookup only</td><td>Hash or B-Tree (B-Tree is safer default)</td></tr>
+      <tr><td>JSONB fields in PostgreSQL</td><td>GIN index on the JSONB column</td></tr>
+      <tr><td>Append-only time-series / audit log</td><td>BRIN (tiny, fast for time ranges)</td></tr>
+      <tr><td>Subset of rows (e.g. only active records)</td><td>Partial index with <code>WHERE</code> clause</td></tr>
+      <tr><td>High-dimensional vector similarity</td><td>HNSW (Pinecone) or pgvector GiST/HNSW</td></tr>
+    </tbody>
+  </table>
+
+  <!-- Quiz -->
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <!-- Primary Source -->
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong><a href="https://use-the-index-luke.com/" target="_blank">Use The Index, Luke — Markus Winand</a></strong><br>
+    The best free resource on SQL indexing. Covers B-Trees, composite indexes, slow queries, and query planning in depth. Directly applicable to your PostgreSQL usage. Start with the "Anatomy of an Index" chapter.
+  </p>
+  <p>
+    <strong><a href="https://dataintensive.net/" target="_blank">Designing Data-Intensive Applications — Ch. 3 (Kleppmann)</a></strong><br>
+    Covers storage engines, B-Trees vs LSM-Trees, SSTables. The deeper mechanical picture of how databases actually store and retrieve data.
+  </p>
+
+  <!-- Navigation -->
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <a href="0001-cap-theorem.html">← Lesson 01: CAP Theorem</a>
+    &nbsp;|&nbsp;
+    <strong>Next:</strong> <em>Lesson 03 — coming soon</em>
+    &nbsp;|&nbsp;
+    <a href="../reference/">Reference documents</a>
+  </div>
+
+  <!-- Ask teacher -->
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Not sure why your composite index isn't being used? Want to know how to run <code>EXPLAIN ANALYZE</code> on a slow query in applyGOAT? Curious how pgvector compares to Pinecone for your use case?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 02 &nbsp;·&nbsp; Database Indexing &amp; Internals &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<!-- Playbook accordion -->
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<!-- Quiz -->
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A B-Tree index has 1 million entries. Roughly how many comparisons does a lookup take?",
+    options: [
+      "1,000,000 — it scans every entry",
+      "500,000 — it scans half on average",
+      "About 20 — it's O(log n)",
+      "1 — it hashes directly to the result"
+    ],
+    answer: 2,
+    explanation: "B-Tree lookup is O(log₂ n). log₂(1,000,000) ≈ 20. This is why indexes are transformational — 20 comparisons vs 1,000,000 for a full table scan."
+  },
+  {
+    q: "You have a composite index on (tenant_id, status, created_at). Which query CANNOT use this index?",
+    options: [
+      "WHERE tenant_id = ? AND status = ?",
+      "WHERE tenant_id = ?",
+      "WHERE status = ? AND created_at > ?",
+      "WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC"
+    ],
+    answer: 2,
+    explanation: "The left-prefix rule: the query must use columns from left to right without skipping. Filtering on status alone skips tenant_id (the first column), so the index cannot be used. The engine would fall back to a full table scan or sequential scan."
+  },
+  {
+    q: "Why does a hash index not support range queries like WHERE created_at > '2024-01-01'?",
+    options: [
+      "Hash indexes are only available in MongoDB, not PostgreSQL",
+      "Hashing destroys ordering — there's no way to scan from a starting point",
+      "Range queries require more than one column and hash indexes only support one",
+      "Hash indexes are read-only and don't support filtering"
+    ],
+    answer: 1,
+    explanation: "A hash function maps values to arbitrary bucket positions with no ordering relationship. hash('2024-01-01') and hash('2024-01-02') could be anywhere. B-Trees keep values sorted, so you can find the start of a range and walk forward — impossible with a hash structure."
+  },
+  {
+    q: "You add 8 indexes to a heavily written table and write throughput drops 40%. What's the most likely cause?",
+    options: [
+      "Indexes lock the table during reads, blocking writes",
+      "Each write must update all 8 indexes, multiplying the I/O cost",
+      "PostgreSQL can only maintain 5 indexes efficiently per table",
+      "The indexes are stored in RAM and are evicting your query cache"
+    ],
+    answer: 1,
+    explanation: "Every INSERT, UPDATE, or DELETE must maintain every index on the table. 8 indexes means 8x the index maintenance work per write. Heavy UPDATE workloads also cause index bloat as old entries are marked dead rather than updated in place."
+  },
+  {
+    q: "Pinecone uses HNSW instead of a B-Tree for vector indexing. What's the primary reason?",
+    options: [
+      "HNSW is faster for exact nearest-neighbor search in all dimensions",
+      "B-Trees can't store floating-point values, which vectors require",
+      "High-dimensional vectors have no meaningful sort order — B-Trees break down",
+      "HNSW uses less memory than B-Trees at large scale"
+    ],
+    answer: 2,
+    explanation: "The 'curse of dimensionality' — in high-dimensional space (e.g. 1536 dimensions for OpenAI embeddings), tree-based structures lose their efficiency because the concept of 'sorted order' across all dimensions doesn't work. HNSW uses a navigable graph structure instead, achieving approximate nearest-neighbor search in O(log n)."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

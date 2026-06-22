@@ -1,0 +1,431 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 07 — Database Normalization</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .anomaly-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin: 1.25rem 0; }
+    .anomaly-card { border: 1px solid var(--danger); border-radius: 8px; padding: 0.9rem; background: var(--danger-light); font-family: var(--font-ui); font-size: 0.84rem; }
+    .anomaly-name { font-weight: 700; color: var(--danger); margin-bottom: 0.4rem; }
+    @media (max-width: 640px) { .anomaly-grid { grid-template-columns: 1fr; } }
+
+    .nf-header { display: flex; align-items: center; gap: 1rem; margin: 2rem 0 0.75rem; }
+    .nf-badge { background: var(--accent); color: white; font-family: var(--font-ui); font-weight: 800; font-size: 1.1rem; padding: 0.3rem 0.8rem; border-radius: 6px; flex-shrink: 0; }
+    .nf-title { font-family: var(--font-ui); font-weight: 700; font-size: 1.1rem; }
+    .nf-rule { font-family: var(--font-ui); font-size: 0.82rem; color: var(--muted); font-style: italic; }
+
+    .schema-bad { background: #2d1a1a; border-left: 3px solid var(--danger); }
+    .schema-good { background: #1a2d1a; border-left: 3px solid var(--success); }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 07</div>
+    <div class="pillar-badge">Database Design</div>
+    <h1 class="lesson-title">Database Normalization</h1>
+    <p class="lesson-subtitle">Why bad table design causes data corruption by design — and the rules that prevent it.</p>
+  </header>
+
+  <h2>Why Normalization Exists — The Anomalies</h2>
+  <p>Normalization isn't about aesthetic table design. It's about preventing three categories of bugs that occur naturally when data is stored redundantly. These are called <strong>modification anomalies</strong>.</p>
+
+  <p>Consider this denormalized table for applyGOAT:</p>
+
+  <pre><code>applications(
+  app_id, user_id, user_email, user_name,
+  job_id, company_name, company_industry,
+  status, applied_at
+)</code></pre>
+
+  <div class="anomaly-grid">
+    <div class="anomaly-card">
+      <div class="anomaly-name">Update Anomaly</div>
+      Tom changes his email. You must update it in every application row. Miss one: your database now has two "truths" for Tom's email. Inconsistent forever unless you find all rows.
+    </div>
+    <div class="anomaly-card">
+      <div class="anomaly-name">Insertion Anomaly</div>
+      You can't store a company in the database unless a user has already applied to one of their jobs. Company data only exists as a side effect of an application row.
+    </div>
+    <div class="anomaly-card">
+      <div class="anomaly-name">Deletion Anomaly</div>
+      Tom deletes his only application to CompanyX. The record of CompanyX's industry disappears from the database entirely — you've accidentally deleted company metadata.
+    </div>
+  </div>
+
+  <p>All three anomalies come from the same root cause: <strong>one fact stored in multiple places</strong>. Normalization is the process of reorganizing tables so each fact is stored exactly once.</p>
+
+  <h2>Functional Dependencies — The Foundation</h2>
+  <p>Before the normal forms: you need to understand functional dependency. Column B is <em>functionally dependent</em> on column A if knowing A's value tells you exactly one B value.</p>
+
+  <pre><code>user_id  →  user_email     (knowing the user_id tells you their email — 1:1)
+user_id  →  user_name      (same)
+job_id   →  company_name   (knowing the job tells you the company)
+company_name → industry    (knowing the company tells you the industry)
+
+-- But NOT:
+user_id  →  status         (one user can have many application statuses)
+app_id   →  user_id        (an application belongs to one user — this IS a dependency)</code></pre>
+
+  <p>Normal forms are rules about which functional dependencies are allowed to exist within a table, relative to its primary key.</p>
+
+
+  <div class="nf-header">
+    <div class="nf-badge">1NF</div>
+    <div>
+      <div class="nf-title">First Normal Form</div>
+      <div class="nf-rule">Rule: Every column contains atomic (indivisible) values. No repeating groups. Every row is uniquely identifiable by a primary key.</div>
+    </div>
+  </div>
+
+  <p><strong>Violation:</strong> Storing multiple values in one cell.</p>
+
+  <pre><code class="schema-bad">-- VIOLATES 1NF: multiple skills in one column
+users(user_id, name, skills)
+-- row: (1, 'Tom', 'Python,FastAPI,React')
+-- Cannot query by individual skill. Can't index. String parsing in app code.</code></pre>
+
+  <pre><code class="schema-good">-- 1NF: atomic values, separate table for skills
+users(user_id, name)
+user_skills(user_id, skill)
+-- Can now: WHERE skill = 'Python', INDEX on skill, JOIN cleanly</code></pre>
+
+  <p>The red flag in a non-1NF column: comma-separated lists, JSON arrays used as filters, or columns like <code>tag1, tag2, tag3</code>. These force string parsing in application code and prevent efficient querying.</p>
+
+  <div class="callout">
+    <span class="callout-label">JSONB exception</span>
+    PostgreSQL's JSONB columns technically store non-atomic data, but with GIN indexes they can be queried efficiently. This is a pragmatic exception to 1NF — acceptable when the JSON is opaque metadata that you never filter on individual keys, or when GIN indexing covers your query patterns.
+  </div>
+
+
+  <div class="nf-header">
+    <div class="nf-badge">2NF</div>
+    <div>
+      <div class="nf-title">Second Normal Form</div>
+      <div class="nf-rule">Rule: Must be in 1NF. Every non-key column must depend on the <em>entire</em> primary key — not just part of it.</div>
+    </div>
+  </div>
+
+  <p>2NF only applies when the primary key is composite (multiple columns). A partial dependency is when a non-key column depends on only one column of the composite key.</p>
+
+  <pre><code class="schema-bad">-- PK: (app_id, skill_id) — composite
+application_skills(app_id, skill_id, skill_name, applicant_email)
+--
+-- PARTIAL DEPENDENCY: skill_name depends only on skill_id (not app_id)
+-- skill_name is duplicated across every application that uses that skill
+-- Violates 2NF</code></pre>
+
+  <pre><code class="schema-good">-- 2NF: decompose into separate tables
+application_skills(app_id, skill_id)   -- PK: (app_id, skill_id)
+skills(skill_id, skill_name)           -- skill_name depends on its full PK
+applications(app_id, applicant_email)  -- applicant_email depends on its full PK</code></pre>
+
+
+  <div class="nf-header">
+    <div class="nf-badge">3NF</div>
+    <div>
+      <div class="nf-title">Third Normal Form</div>
+      <div class="nf-rule">Rule: Must be in 2NF. No non-key column should depend on another non-key column (no transitive dependencies).</div>
+    </div>
+  </div>
+
+  <p>A transitive dependency: A → B → C, where A is the key but B is not. C depends on the key transitively through B.</p>
+
+  <pre><code class="schema-bad">-- PK: app_id
+applications(app_id, job_id, company_id, company_name, company_industry)
+--
+-- TRANSITIVE: app_id → company_id → company_name
+--             app_id → company_id → company_industry
+-- company_name and company_industry depend on company_id, not app_id directly
+-- Update a company's name: every application row for that company must change
+-- Violates 3NF</code></pre>
+
+  <pre><code class="schema-good">-- 3NF: each fact in its own table
+applications(app_id, job_id, company_id, status, applied_at)
+companies(company_id, company_name, industry)
+jobs(job_id, company_id, title, location)
+-- company_name stored once in companies — updating it updates everywhere</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">The 3NF test</span>
+    For each non-key column: "Does this column describe the primary key, the whole primary key, and nothing but the primary key?" If no — it belongs in a separate table. (Mnemonic: "the key, the whole key, and nothing but the key.")
+  </div>
+
+
+  <div class="nf-header">
+    <div class="nf-badge">BCNF</div>
+    <div>
+      <div class="nf-title">Boyce-Codd Normal Form</div>
+      <div class="nf-rule">Rule: For every non-trivial functional dependency X → Y, X must be a superkey (a set of columns that uniquely identifies a row).</div>
+    </div>
+  </div>
+
+  <p>BCNF is a stricter version of 3NF. The difference surfaces when a table has multiple overlapping candidate keys.</p>
+
+  <pre><code class="schema-bad">-- A user can have only one active subscription per plan
+-- A subscription_code belongs to exactly one plan
+user_subscriptions(user_id, plan_id, subscription_code)
+-- Candidate keys: (user_id, plan_id) AND (user_id, subscription_code)
+-- But: subscription_code → plan_id (the code determines the plan)
+-- subscription_code is NOT a superkey — violates BCNF</code></pre>
+
+  <p>In practice, violations of BCNF (beyond 3NF) are rare in typical application schemas. Most designs that reach 3NF automatically satisfy BCNF.</p>
+
+
+  <h2>The applyGOAT Schema — Applied</h2>
+  <p>Here's how a typical first-draft applyGOAT schema evolves through normalization:</p>
+
+  <pre><code>-- First draft (violates 2NF and 3NF)
+applications(
+  id, user_id, user_email, user_plan,
+  job_id, job_title, company_id, company_name, company_industry,
+  status, score, notes, applied_at
+)</code></pre>
+
+  <pre><code>-- Normalized to 3NF
+users(id, email, name, created_at)
+subscriptions(id, user_id, plan_id, status, expires_at)
+plans(id, name, features, price)
+
+companies(id, name, industry, website)
+jobs(id, company_id, title, location, salary_range, posted_at)
+
+applications(
+  id, user_id, job_id,
+  status, score, notes, applied_at
+)
+-- user_email: join to users. company_name: join to jobs→companies.
+-- No redundancy. One change in companies updates everywhere.</code></pre>
+
+
+  <h2>When to Denormalize — Intentionally</h2>
+  <p>Normalization is not the end state. At production scale, denormalization is a deliberate performance trade-off: accept some redundancy to avoid expensive joins on hot read paths.</p>
+
+  <table>
+    <thead>
+      <tr><th>Scenario</th><th>Denormalization approach</th><th>Consistency strategy</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Dashboard shows application count per user on every page load</td>
+        <td>Add <code>application_count</code> column to users table. Update it on INSERT/DELETE via trigger or application logic.</td>
+        <td>Trigger keeps it in sync. Occasional recompute job as safety net.</td>
+      </tr>
+      <tr>
+        <td>Search result cards show company name alongside job title</td>
+        <td>Store <code>company_name</code> denormalized in jobs table (it changes rarely).</td>
+        <td>Update jobs.company_name when companies.name changes (application or trigger).</td>
+      </tr>
+      <tr>
+        <td>Analytics dashboard over millions of rows</td>
+        <td>Pre-aggregate into a separate summary table, refreshed on schedule.</td>
+        <td>Eventual consistency acceptable — dashboard is slightly behind.</td>
+      </tr>
+      <tr>
+        <td>Audit log / event sourcing</td>
+        <td>Snapshot full record state at event time (fully denormalized by design).</td>
+        <td>Events are immutable — no consistency issue.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Denormalization is a paid-off technical debt</span>
+    The moment you denormalize, you own the consistency strategy for that redundancy. If you forget to update the denormalized column, you now have silent data inconsistency. Document every denormalization decision with why it was made and how consistency is maintained.
+  </div>
+
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Fundamentals</div>
+          <div class="playbook-q-text">"Explain 1NF, 2NF, and 3NF with an example."</div>
+          <div class="playbook-q-probe">Follow-up: "What modification anomalies does each normal form prevent?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Using a job application table: 1NF requires atomic values and no repeating groups — skills must be a separate table, not a comma-separated string in one column. 2NF requires that every non-key column depends on the entire composite primary key — if the PK is (app_id, skill_id), then skill_name should go in a skills table because it only depends on skill_id, not the pair. 3NF requires no transitive dependencies — company_name shouldn't be in the applications table because it depends on company_id, not app_id. Each fact belongs in its own table."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "1NF prevents the need to parse composite values in application code and enables proper indexing. 2NF prevents update anomalies on partial key dependencies — if skill_name is in the application_skills table, changing the skill name requires updating every row that skill appears in. 3NF prevents transitive update anomalies — company_name stored in applications means updating a company's name requires touching every application row. Each normal form collapses a specific category of redundancy that was causing a specific class of anomaly."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Trade-offs (senior question)</div>
+          <div class="playbook-q-text">"Your read API endpoint joins users → applications → jobs → companies on every request. It's slow. Do you denormalize or optimize differently?"</div>
+          <div class="playbook-q-probe">Follow-up: "If you denormalize company_name into the applications table, how do you keep it consistent?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Optimize before denormalizing. Check EXPLAIN ANALYZE: are indexes missing on the join columns? Is work_mem causing hash join spills? Is the result cacheable with Redis? Denormalization should be a last resort because it moves a consistency problem into my application. If after optimization the join is still the bottleneck and the data is cacheable — cache at the Redis layer instead of denormalizing the schema. Only denormalize the schema if the data changes too frequently to cache and the join genuinely can't be fast enough with indexes."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Three options: (1) Application-level consistency — when company.name updates, also update applications.company_name in the same transaction. Risks missing it if any code path updates companies without the join. (2) Database trigger — ON UPDATE on companies, trigger propagates to applications. Invisible to application code, always fires, but adds write latency and can surprise future developers. (3) Scheduled reconciliation job — periodically re-sync denormalized columns from source of truth. Accepts eventual consistency. I'd go with option 2 (trigger) documented in migration comments, or option 1 enforced through a service layer that's the only code path that can update companies."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Design challenge</div>
+          <div class="playbook-q-text">"Design the schema for applyGOAT's multi-tenant SaaS — users, tenants, plans, job applications. Normalize to 3NF."</div>
+          <div class="playbook-q-probe">Follow-up: "How would you enforce tenant isolation at the database level?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Tenants table: id, name, domain, created_at. Plans: id, name, price, features (JSONB). Subscriptions: id, tenant_id → tenants, plan_id → plans, status, expires_at. Users: id, tenant_id → tenants, email, name, created_at. Companies: id, name, industry, website. Jobs: id, company_id → companies, title, location, salary_range. Applications: id, user_id → users, job_id → jobs, status, score, notes, applied_at. Each entity owns its own facts. User email is in users. Company name is in companies. Application status is in applications. No column in any table depends on a non-key column of the same table."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Three layers: (1) Row-level security (RLS) in PostgreSQL — policies that automatically filter every query by tenant_id based on a session variable. No application code needed for tenant filtering. (2) Application-level: every query is parameterized with tenant_id from the JWT, enforced in a service layer. (3) Schema-per-tenant (like Instagram's approach) — each tenant is a separate PostgreSQL schema. True isolation but harder to query across tenants. For applyGOAT at current scale I'd use RLS + tenant_id on every relevant table with a composite index (tenant_id, ...) as the first column. This gives isolation without schema sprawl."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch</span>
+    Candidates often recite the normal form definitions without anchoring them to the anomalies they prevent. Interviewers want to hear: "2NF prevents update anomalies from partial key dependencies" not just "2NF means every column depends on the whole key." The why matters more than the rule.
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0006-query-optimization.html">Lesson 06 — Query Optimization</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0008-database-internals.html">Lesson 08 — Database Internals</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to review applyGOAT's actual schema for normalization issues? Unsure whether a JSONB column violates 1NF in your case? Want to design your multi-tenant isolation strategy in detail?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 07 &nbsp;·&nbsp; Database Normalization &nbsp;·&nbsp; Tom George Learning System
+  </div>
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
+}
+</script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A table stores: app_id, user_id, user_email, user_name. The PK is app_id. Which normal form does this violate, and why?",
+    options: [
+      "1NF — user_email is not atomic",
+      "2NF — user_email and user_name depend on user_id, not the full PK app_id",
+      "3NF — user_email transitively depends on user_id, not app_id",
+      "BCNF — user_id is a superkey that determines user_email"
+    ],
+    answer: 2,
+    explanation: "This violates 3NF (and 2NF if you consider user_id as the intermediate). The chain is: app_id → user_id → user_email/user_name. user_email doesn't depend on app_id directly — it depends on user_id, which is a non-key column. This is a transitive dependency. Fix: move user_email/user_name to a users table."
+  },
+  {
+    q: "What is an update anomaly?",
+    options: [
+      "An error thrown by PostgreSQL when UPDATE violates a constraint",
+      "A situation where a fact stored in multiple places must be updated in all of them, and missing one creates inconsistency",
+      "A performance issue caused by updating an indexed column",
+      "A conflict between two concurrent UPDATE statements"
+    ],
+    answer: 1,
+    explanation: "Update anomaly: a fact is stored redundantly. To update it, you must find and update every copy. Miss one and the database now contains contradictory truths. Example: company_name stored in every applications row — rename the company and you must update thousands of rows. Miss any: inconsistent data forever."
+  },
+  {
+    q: "Table: order_products(order_id, product_id, product_name, quantity). PK is (order_id, product_id). Which normal form is violated?",
+    options: [
+      "1NF — quantity is not atomic",
+      "2NF — product_name depends only on product_id, not the composite PK",
+      "3NF — product_name transitively depends on order_id through product_id",
+      "It satisfies all normal forms"
+    ],
+    answer: 1,
+    explanation: "2NF violation: partial dependency. The PK is (order_id, product_id). product_name only depends on product_id — not on the full composite key. Fix: create a products(product_id, product_name) table and remove product_name from order_products."
+  },
+  {
+    q: "When is intentional denormalization the right choice?",
+    options: [
+      "Always — normalization is only for academic exercises",
+      "Never — normalization guarantees always outweigh performance",
+      "When the join cost on a hot read path is unacceptable after indexing and caching, and you have a clear consistency strategy",
+      "When the table has more than 1 million rows"
+    ],
+    answer: 2,
+    explanation: "Denormalization is a deliberate trade-off: accept redundancy to avoid an expensive join on a hot path. The preconditions: you've already optimized indexes and considered caching; the join is still the bottleneck; you have a clear strategy to keep the redundant data consistent (trigger, application layer, or scheduled job). Without these, denormalization just creates silent inconsistency bugs."
+  },
+  {
+    q: "Which mnemonic captures 3NF correctly?",
+    options: [
+      "Every non-key column depends on the key, the whole key, and nothing but the key",
+      "Every column has an atomic value and belongs to exactly one table",
+      "No column in a composite primary key can be NULL",
+      "Every table has a single-column primary key"
+    ],
+    answer: 0,
+    explanation: "'The key, the whole key, and nothing but the key.' This captures all three: 'the key' (not NULL, there is a PK) → 1NF basics; 'the whole key' (every non-key column depends on all of the PK, not just part) → 2NF; 'nothing but the key' (no transitive dependencies through non-key columns) → 3NF."
+  }
+];
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

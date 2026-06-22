@@ -1,0 +1,1384 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 03 — Database Scaling: From One Machine to a Planet</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    /* Lesson-local additions */
+    .layer-stack {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 1.5rem 0;
+      font-family: var(--font-ui);
+    }
+    .layer-stack-row {
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid var(--border);
+    }
+    .layer-stack-row:last-child { border-bottom: none; }
+    .layer-num {
+      background: var(--pill-bg);
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--muted);
+      min-width: 2.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-right: 1px solid var(--border);
+    }
+    .layer-content {
+      padding: 0.75rem 1rem;
+      flex: 1;
+    }
+    .layer-name { font-weight: 700; font-size: 0.9rem; }
+    .layer-desc { font-size: 0.83rem; color: var(--muted); margin-top: 0.15rem; }
+    .layer-cost { font-size: 0.8rem; color: var(--danger); margin-top: 0.15rem; }
+    .layer-stack-row.active .layer-num { background: var(--accent); color: white; }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+    .metric-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: center;
+      font-family: var(--font-ui);
+    }
+    .metric-val {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--accent);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+    .metric-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; line-height: 1.3; }
+
+    .arch-diagram {
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.7;
+      padding: 1.25rem 1.5rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin-bottom: 1.25rem;
+      white-space: pre;
+    }
+
+    .part-divider {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin: 2.5rem 0 1.5rem;
+    }
+    .part-divider-line { flex: 1; height: 1px; background: var(--border); }
+    .part-divider-label {
+      font-family: var(--font-ui);
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .case-study-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 1.25rem 0;
+    }
+    .case-study-header {
+      background: var(--pill-bg);
+      padding: 0.6rem 1.1rem;
+      font-family: var(--font-ui);
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .case-study-body {
+      padding: 1rem 1.1rem;
+      font-family: var(--font-ui);
+      font-size: 0.88rem;
+      line-height: 1.65;
+    }
+    .case-study-body ul { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <!-- Header -->
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 03</div>
+    <div class="pillar-badge">Database Scaling</div>
+    <h1 class="lesson-title">Database Scaling:<br>From One Machine to a Planet</h1>
+    <p class="lesson-subtitle">How Instagram, Discord, and Google broke every database ceiling, layer by layer.</p>
+  </header>
+
+  <!-- The Mental Model -->
+  <h2>The One Mental Model to Hold</h2>
+  <p>Every scaling technique in this lesson is a response to exhausting the layer below it. Add a layer only when forced — each one has a real, ongoing cost.</p>
+
+  <div class="layer-stack">
+    <div class="layer-stack-row">
+      <div class="layer-num">1</div>
+      <div class="layer-content">
+        <div class="layer-name">Single PostgreSQL / MySQL node</div>
+        <div class="layer-desc">10K–50K simple queries/sec. Works for millions of users when tuned. Start here.</div>
+        <div class="layer-cost">Cost: none. Single machine, single failure domain.</div>
+      </div>
+    </div>
+    <div class="layer-stack-row">
+      <div class="layer-num">2</div>
+      <div class="layer-content">
+        <div class="layer-name">Read replicas</div>
+        <div class="layer-desc">Fan read traffic across multiple nodes. Near-linear read scale.</div>
+        <div class="layer-cost">Cost: replication lag, read-your-own-writes anomalies, failover complexity.</div>
+      </div>
+    </div>
+    <div class="layer-stack-row">
+      <div class="layer-num">3</div>
+      <div class="layer-content">
+        <div class="layer-name">Cache layer (Redis / Memcached)</div>
+        <div class="layer-desc">Absorb 95–99% of reads before they touch the database.</div>
+        <div class="layer-cost">Cost: cache invalidation complexity, thundering herd risk, stale data.</div>
+      </div>
+    </div>
+    <div class="layer-stack-row">
+      <div class="layer-num">4</div>
+      <div class="layer-content">
+        <div class="layer-name">Sharding (horizontal partitioning)</div>
+        <div class="layer-desc">Split the dataset across N primaries, each owning its own slice. Write scale.</div>
+        <div class="layer-cost">Cost: lose single-node ACID, cross-shard queries become scatter-gather.</div>
+      </div>
+    </div>
+    <div class="layer-stack-row">
+      <div class="layer-num">5</div>
+      <div class="layer-content">
+        <div class="layer-name">Eventual consistency / distributed consensus</div>
+        <div class="layer-desc">Global distribution with Raft/Paxos-backed replication or relaxed consistency.</div>
+        <div class="layer-cost">Cost: convergence windows, conflict resolution, commit latency (Spanner: ~7ms).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">applyGOAT right now</span>
+    You're at layer 1. A well-tuned single PostgreSQL node handles tens of thousands of QPS. Most startups at 20K users never need layer 2. Know the layers so you can make the right call when — if — you reach each ceiling.
+  </div>
+
+
+  <!-- PART 1 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 1 — What Breaks First</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>The Six Failure Modes of a Single Database</h2>
+  <p>These aren't theoretical — they hit in this sequence as traffic grows.</p>
+
+  <h3>1. Connection limit</h3>
+  <p>PostgreSQL default: <code>max_connections = 100</code>. Each connection is a separate OS process consuming 5–10 MB RAM. You can add <strong>PgBouncer</strong> as a connection pooler in front, but that only moves the bottleneck — the database engine can still only process a finite number of queries in parallel. The pooler doesn't give you more CPU cores.</p>
+
+  <div class="callout">
+    <span class="callout-label">What PgBouncer actually does — and why it still hits a wall</span>
+
+    <p style="margin-bottom:0.75rem">Imagine PostgreSQL is a restaurant with <strong>10 tables</strong> (connections). Without a pooler, every customer who walks in needs their own table — so only 10 customers can be inside at once. The other 490 get an error at the door: <em>"connection refused."</em></p>
+
+    <p style="margin-bottom:0.75rem"><strong>PgBouncer is a waiting room outside the restaurant.</strong> It can hold 500 customers (application connections). When a customer is done ordering (query done), PgBouncer hands their table to the next waiting customer. The application thinks it has 500 connections; the database only sees 10.</p>
+
+    <p style="margin-bottom:0.75rem">So what problem does this solve? The original crash — 500 app servers each trying to open their own connection and hitting the 100 limit. PgBouncer collapses all of those into a small pool. Your app no longer gets <code>too many connections</code> errors.</p>
+
+    <p style="margin-bottom:0.75rem"><strong>What it does NOT solve: the restaurant still only has 10 tables.</strong> If 500 customers all want to order at the exact same moment, only 10 can be served at once — the rest wait in line. The throughput ceiling hasn't moved. The database can only run as many queries in parallel as it has CPU cores and workers available.</p>
+
+    <p style="margin-bottom:0">The bottleneck shifted: before PgBouncer, you crashed at the connection stage. After PgBouncer, you survive the connection stage but now queue at the query execution stage. That's better — queuing is recoverable, crashing is not — but the fundamental limit is still there. PgBouncer buys you headroom, not unlimited capacity.</p>
+  </div>
+
+  <h3>2. Throughput ceiling</h3>
+  <p>One well-tuned server handles roughly 10,000–50,000 simple queries per second. The moment your query mix involves JOINs, aggregations, or full table scans, that ceiling drops dramatically. Adding CPU via vertical scaling helps — until it doesn't.</p>
+
+  <h3>3. The latency cliff</h3>
+  <p>When your active working set fits in the database's buffer pool, reads come from RAM. The moment it overflows, the engine hits disk.</p>
+
+  <div class="metric-row">
+    <div class="metric-card">
+      <div class="metric-val">~100ns</div>
+      <div class="metric-label">RAM access</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">~100µs</div>
+      <div class="metric-label">NVMe SSD read</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">~10ms</div>
+      <div class="metric-label">HDD seek</div>
+    </div>
+  </div>
+
+  <p>That is a <strong>100,000× difference</strong> between RAM and spinning disk. Latency doesn't increase gradually when you overflow the buffer pool — it falls off a cliff. One query that causes a disk seek can block dozens of queries waiting behind it.</p>
+
+  <h3>4. Vertical scaling wall</h3>
+  <p>AWS offers instances like the <code>u-24tb1.metal</code>: 24 TB RAM, 448 vCPUs. That's enormous — but cost grows super-linearly as you climb the SKUs. More critically, there's a hard ceiling. AWS offers a finite set of instance types. You will eventually reach the largest one and still need more capacity.</p>
+
+  <h3>5. Single failure domain</h3>
+  <p>One machine is one failure domain. Power supply dies, kernel panics, hardware fails — every user and every request disappears until you recover. This is the availability problem vertical scaling cannot solve.</p>
+
+  <h3>6. Single WAL writer</h3>
+  <p>The <strong>Write-Ahead Log (WAL)</strong> is how PostgreSQL (and MySQL's binlog) guarantee durability: every write is flushed to the log before it's acknowledged. That log lives on one disk on one machine. No matter how many CPUs you add, all write traffic must serialize through that single sequential bottleneck. This is the write scale ceiling — and it's what sharding ultimately breaks through.</p>
+
+  <div class="callout">
+    <span class="callout-label">Why you need to know this</span>
+    In a system design interview, naming the <em>specific</em> bottleneck you're solving (WAL contention vs. connection exhaustion vs. buffer pool overflow) is what separates a senior answer from a generic "add more servers" answer.
+  </div>
+
+
+  <!-- PART 2 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 2 — Read Replicas</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>Read Replicas: The First Move</h2>
+  <p>Keep one node as the primary. Stream every change to N replicas. Writes go to the primary only. Reads distribute across replicas. This is <strong>primary-replica replication</strong> and it's the foundation of virtually every large relational deployment in production.</p>
+
+  <h3>How replication works under the hood</h3>
+  <p>The primary writes every change to its log. Each replica tails that log and applies operations in order. PostgreSQL calls this the WAL; MySQL calls it the binlog. The replica is always some number of bytes behind the primary — the replication lag.</p>
+
+  <h3>Async vs sync vs semi-sync</h3>
+
+  <table>
+    <thead>
+      <tr><th>Mode</th><th>How it works</th><th>Pro</th><th>Con</th><th>RPO</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Async</strong></td>
+        <td>Primary acks the write immediately. Replica catches up shortly after.</td>
+        <td>Lowest write latency</td>
+        <td>If primary crashes before shipping WAL, that data is gone. Replica never saw it.</td>
+        <td>&gt; 0 (data loss possible)</td>
+      </tr>
+      <tr>
+        <td><strong>Sync</strong></td>
+        <td>Primary holds the write until at least one replica confirms it.</td>
+        <td>Zero data loss on failover</td>
+        <td>Write latency = primary commit + round trip to slowest sync replica. If that replica goes offline, all writes block.</td>
+        <td>= 0</td>
+      </tr>
+      <tr>
+        <td><strong>Semi-sync</strong></td>
+        <td>One replica is sync (durability). Rest are async (read throughput).</td>
+        <td>Best of both</td>
+        <td>Still blocks if the one sync replica goes down</td>
+        <td>~0</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Most production teams use <strong>semi-sync</strong>: one acknowledged copy for safety, many lagging copies for read scaling.</p>
+
+  <h3>Replication lag anomalies</h3>
+  <p>Lag is expected. The problem is when applications don't account for it and users experience what look like bugs.</p>
+
+  <p><strong>Anomaly 1: Read Your Own Writes.</strong> User updates their profile photo. Write commits on primary. Their next page load is routed to a replica that hasn't caught up. Old photo appears. They think the app lost their change.</p>
+  <p><em>Fix:</em> Pin reads to the primary for a short window after any write (a few seconds), or track the WAL LSN of the write and only route reads to a replica that has caught up past that position.</p>
+
+  <p><strong>Anomaly 2: Monotonic Reads violation.</strong> Consecutive requests from the same user hit different replicas at different lag levels. A feed item appears, then disappears on refresh. Time appears to go backward.</p>
+  <p><em>Fix:</em> Stick a user session to the same replica so their view is at least self-consistent.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Interview trap</span>
+    "We use read replicas for scale" is a weak answer. The strong answer names the anomalies, how you detect them (user-reported regressions, or monitoring replica lag), and how you mitigate them in your routing logic.
+  </div>
+
+  <h3>Failover and split brain</h3>
+  <p>When a primary dies, something must: detect the failure, choose a replica to promote, and repoint all clients to the new primary.</p>
+  <p><strong>Detection is hard.</strong> Is the primary dead or just slow? Is it a network partition? Timeouts lie. If the old primary comes back while the promoted replica is already accepting writes, you have two nodes that both believe they are primary — <strong>split brain</strong>. This can corrupt data silently.</p>
+  <p>Serious systems use <strong>consensus protocols (Raft/Paxos)</strong> to make promotions safe. We cover this in Part 7. Instagram ran sharded PostgreSQL with replicas as its core read-scaling strategy while growing past tens of millions of users.</p>
+
+  <div class="callout">
+    <span class="callout-label">What replicas do NOT solve</span>
+    All writes still funnel through one primary, one WAL, one disk. You can have 100 replicas and the write throughput ceiling sits exactly where it was. To break that, you shard (Part 5).
+  </div>
+
+
+  <!-- PART 3 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 3 — The Cache Layer</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>Caching: Absorb 99% of Reads</h2>
+  <p>A cache sits <em>in front</em> of your database and stores results in memory so the database never answers the same question twice.</p>
+
+  <h3>The three patterns</h3>
+
+  <table>
+    <thead>
+      <tr><th>Pattern</th><th>How it works</th><th>Pro</th><th>Con</th><th>Use when</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Cache-aside</strong> (lazy loading)</td>
+        <td>App checks cache first. Miss → read DB → write to cache with TTL → return. Next request hits cache.</td>
+        <td>Only caches what's actually requested. Simple.</td>
+        <td>First request after miss hits DB. Stale data possible until TTL expires.</td>
+        <td>Default choice — almost always correct.</td>
+      </tr>
+      <tr>
+        <td><strong>Write-through</strong></td>
+        <td>On every write: write to cache AND database atomically.</td>
+        <td>Cache always fresh. No cold start on reads.</td>
+        <td>Every write pays cost of both. Caches data that may never be read.</td>
+        <td>Write-heavy with high read demand on same data.</td>
+      </tr>
+      <tr>
+        <td><strong>Write-back</strong> (write-behind)</td>
+        <td>Write to cache only. Database flush is async.</td>
+        <td>Lowest write latency.</td>
+        <td>If cache node dies before flush, data is lost permanently.</td>
+        <td>Extreme write throughput where some data loss is acceptable (e.g., metrics).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cache-aside — step by step</span>
+
+    <p style="margin-bottom:0.6rem">The app is in charge. The cache doesn't know anything about your DB — your code manages both.</p>
+
+    <pre style="margin-bottom:0.75rem">-- First ever request for user 42's resume: --
+
+App → Redis GET resume:42          → MISS (nothing there yet)
+App → DB: SELECT * FROM resumes WHERE user_id = 42
+DB  → returns resume data
+App → Redis SET resume:42 [data] TTL=1h   ← app fills the cache itself
+App → returns data to user
+
+-- Every request after that (within 1 hour): --
+
+App → Redis GET resume:42          → HIT (served from memory, DB not touched)</pre>
+
+    <p style="margin-bottom:0.6rem"><strong>The "lazy" part:</strong> the cache only gets populated when someone actually asks for the data. If user 99's resume is never requested, it never enters the cache. Nothing is pre-loaded.</p>
+    <p style="margin-bottom:0"><strong>The con:</strong> the very first request always goes to the DB. After a deploy, Redis restart, or TTL expiry — cold start. That first user gets a slow response.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Write-through — step by step</span>
+
+    <p style="margin-bottom:0.6rem">The app writes to <em>both</em> the cache and DB on every write. Reads always hit the cache — it's always warm.</p>
+
+    <pre style="margin-bottom:0.75rem">-- User updates their resume: --
+
+App → Redis SET resume:42 [new data]    ← write to cache first
+App → DB: UPDATE resumes SET ... WHERE user_id = 42   ← write to DB too
+Both succeed → return OK to user
+
+-- Next request for resume:42: --
+
+App → Redis GET resume:42          → HIT (always — cache was just written)</pre>
+
+    <p style="margin-bottom:0.6rem"><strong>Why this is sometimes wasteful:</strong> suppose user 42 updates their resume 10 times in a row (draft saves). Each of those 10 writes goes to both Redis AND the DB. But the resume is only read once every few hours. You paid 10× the write cost to keep a cache warm that barely gets read.</p>
+    <p style="margin-bottom:0"><strong>Use it when:</strong> writes and reads on the same data are both frequent — e.g., a leaderboard that's written every second and read every 100ms.</p>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Write-back — step by step (and why it's dangerous)</span>
+
+    <p style="margin-bottom:0.6rem">Write to the cache only. The DB flush happens later, in the background. The write feels instant to the user.</p>
+
+    <pre style="margin-bottom:0.75rem">-- User saves a form: --
+
+App → Redis SET form:42 [data]     ← write to cache only, instant
+App → return OK to user immediately
+
+-- Background process (a few seconds/minutes later): --
+
+Worker → Redis GET form:42
+Worker → DB: INSERT INTO ... (flushes it to disk)
+Redis → marks key as "flushed"</pre>
+
+    <p style="margin-bottom:0.6rem"><strong>Why this is fast:</strong> the user never waits for the DB. From their perspective, the save was instant.</p>
+    <p style="margin-bottom:0.6rem"><strong>The disaster scenario:</strong></p>
+
+    <pre style="margin-bottom:0.75rem">10:00:00 — User saves form → Redis has it, DB does not
+10:00:05 — Background worker is about to flush
+10:00:05 — Redis node crashes (power cut, OOM kill, anything)
+
+Result: the data is gone. It never made it to the DB.
+The user was told "saved" — but it wasn't.</pre>
+
+    <p style="margin-bottom:0"><strong>When is this acceptable:</strong> when the data is not user-critical and high write volume is the priority. Example: page view counters, real-time analytics events, game score ticks. Losing a few counts is fine. Losing a user's form submission is not.</p>
+  </div>
+
+  <h3>Hit rate math — the highest-leverage metric in your stack</h3>
+  <p>Suppose your database handles 1,000 queries/second.</p>
+
+  <table>
+    <thead>
+      <tr><th>Cache hit rate</th><th>DB receives</th><th>vs. no cache</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>99%</td><td>10 QPS</td><td>100× less load</td></tr>
+      <tr><td>95%</td><td>50 QPS</td><td>20× less load</td></tr>
+      <tr><td>90%</td><td>100 QPS</td><td>10× less load</td></tr>
+    </tbody>
+  </table>
+
+  <p>A drop from 99% to 95% hit rate <strong>quintuples your database load</strong> — from a 4 percentage point drop. A small regression in cache effectiveness is catastrophic at scale.</p>
+
+  <div class="metric-row">
+    <div class="metric-card">
+      <div class="metric-val">1B+</div>
+      <div class="metric-label">Cache requests/sec at Facebook (2013)</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">100K</div>
+      <div class="metric-label">Redis single-instance ops/sec</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">1M+</div>
+      <div class="metric-label">Redis Cluster ops/sec (scaled horizontally)</div>
+    </div>
+  </div>
+
+  <h3>Cache invalidation strategies</h3>
+  <ul>
+    <li><strong>TTL (Time-to-Live):</strong> Cache key expires after N seconds. Simple, eventually consistent. Fine for tolerant workloads (resume search, feed items).</li>
+    <li><strong>Explicit delete on write:</strong> When a write happens, delete the cache key immediately. Cleaner consistency but creates a brief window where every reader misses and hits DB.</li>
+    <li><strong>Versioned keys:</strong> Embed a version or timestamp in the key (e.g., <code>user:123:v7</code>). Stale entries are simply never requested. New writes create new keys.</li>
+  </ul>
+  <p>In practice: combine all three. TTL as a safety net, explicit delete for critical paths, versioned keys for immutable aggregates.</p>
+
+  <h3>The thundering herd (cache stampede)</h3>
+  <p>A hot key expires. Thousands of concurrent requests see a cache miss simultaneously. Every single one goes to the database at the same instant. The database, which was handling near-zero load a moment ago, gets slammed.</p>
+
+  <div class="callout">
+    <span class="callout-label">What actually happens — normal miss vs thundering herd</span>
+
+    <p style="margin-bottom:0.6rem"><strong>Normal cache hit (the happy path):</strong></p>
+    <pre style="margin-bottom:1rem">Request → Redis: GET job_listings     → HIT → return data   (DB never touched)</pre>
+
+    <p style="margin-bottom:0.6rem"><strong>Normal single cache miss:</strong></p>
+    <pre style="margin-bottom:1rem">Request → Redis: GET job_listings     → MISS
+        → DB: SELECT * FROM job_listings  → 1 query
+        → Redis: SET job_listings (TTL 5min)
+        → return data</pre>
+
+    <p style="margin-bottom:0.6rem">One miss, one DB query, cache is warm again. No problem.</p>
+
+    <p style="margin-bottom:0.6rem"><strong>Thundering herd — what happens when the TTL runs out at 9:00:00.000:</strong></p>
+    <pre style="margin-bottom:1rem">9:00:00.001 — Request 1    → Redis MISS → fires DB query
+9:00:00.001 — Request 2    → Redis MISS → fires DB query
+9:00:00.001 — Request 3    → Redis MISS → fires DB query
+...
+9:00:00.002 — Request 1000 → Redis MISS → fires DB query
+
+DB receives 1000 identical queries at the same instant.
+DB was idle a moment ago. Now it's on fire.</pre>
+
+    <p style="margin-bottom:0">The problem: all 1000 requests checked the cache at the exact moment the key was gone. Every single one got a miss. Every single one independently decided "I'll go fetch it." None of them knew the others were doing the same thing.</p>
+  </div>
+
+  <p><strong>Mitigation 1: Request coalescing (single-flight).</strong> When multiple requests miss on the same key simultaneously, only one is allowed to fetch from the database. The rest wait for that single result. Discord implemented this in Rust at the service layer — not the cache layer.</p>
+
+  <p><strong>Mitigation 2: Probabilistic early expiration.</strong> Instead of a hard TTL deadline, recompute the value slightly early with a probability that increases as the TTL approaches zero.</p>
+
+  <p><strong>Mitigation 3: Facebook's Memcached leases.</strong> A lease is a token issued to the first client that misses a key. Only the lease holder may write back to that cache slot. Others wait. This prevents thundering herds AND eliminates stale-set races (a slow read returning an outdated value and overwriting a newer one).</p>
+
+  <div class="callout">
+    <span class="callout-label">Facebook leases — step by step</span>
+
+    <p style="margin-bottom:0.6rem">The key <code>job_listings</code> just expired. 1000 requests arrive at the same instant.</p>
+    <pre style="margin-bottom:1rem">Step 1 — Request A misses the cache.
+         Memcached: "Here is a lease token #4521. You may fetch from DB."
+
+Step 2 — Requests B, C, D ... Z all also miss the cache.
+         Memcached: "A lease is already issued for this key. Wait."
+
+Step 3 — Request A goes to the DB, fetches job_listings.
+         Request A calls: SET job_listings [data] WITH LEASE #4521
+
+Step 4 — Memcached validates the lease token. Write accepted.
+         All waiting requests (B, C, D ...) are released with the fresh data.
+
+Result: 1 DB query fired. Not 1000.</pre>
+
+    <p style="margin-bottom:0.6rem"><strong>The stale-set race it also fixes:</strong> imagine Request A is very slow (DB is under load). By the time A comes back with the data, someone else already updated the DB with a newer value. Without leases, A would overwrite the fresh value with its stale result. With leases: when A tries to write back, Memcached checks the token. If the key was already invalidated by a write, the token is revoked — A's stale write is rejected.</p>
+
+    <p style="margin-bottom:0">One mechanism, two problems solved: stampede prevention + stale overwrite prevention.</p>
+  </div>
+
+  <h3>Facebook's McSqueal: cache consistency at scale</h3>
+  <p>Facebook built a daemon called <strong>McSqueal</strong> that tails MySQL binlogs and proactively invalidates cache entries across regions the moment a write commits to the database. This is how you keep a cache consistent at billions of requests/second across geographically distributed deployments. The cache is not a nice-to-have at that scale — it's load-bearing infrastructure.</p>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT application</span>
+    Resume parsing results, AI cover letter generations, job listings — all strong cache candidates. Cache key = <code>user:{id}:resume:{version}</code>. Invalidate on upload, TTL of 1 hour as safety net. Read-your-own-writes anomaly is fine here — a 2-second delay before a fresh analysis is visible is acceptable.
+  </div>
+
+
+  <!-- PART 4 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 4 — Storage Engines</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>B-Tree vs LSM Tree: What's Actually on Disk</h2>
+  <p>Every database stores data on disk. Two completely different designs decide how it gets there and how it gets read back — and they make opposite bets on what matters more.</p>
+
+  <h3>B-Tree (PostgreSQL, MySQL InnoDB) — the organised filing cabinet</h3>
+
+  <p>Imagine a perfectly organised filing cabinet. Every drawer is labeled. Files inside each drawer are sorted. You can find any document in a few hops.</p>
+
+  <p>A B-Tree works the same way. Data lives in <strong>fixed-size pages</strong> (4–16 KB), arranged in a balanced tree. To find a row: start at the top, follow the labels down a few levels until you hit the leaf page containing your data. Leaf pages are sorted and linked in order, so range queries ("give me users 100–200") scan smoothly along the chain.</p>
+
+  <div class="arch-diagram">B-Tree lookup for user 42:
+
+  [Root page]
+      └── "users 1–1000" → [Internal page]
+                               └── "users 1–500"  → [Leaf page: rows 1–500]
+                                                          ↑
+                                                     user 42 is here
+
+  Path: Root → Internal → Leaf.  3 page reads. Done.
+  Range scan (users 40–60): land on the right leaf, follow the linked list right.</div>
+
+  <p><strong>How writes work:</strong> Find the right page on disk → pull it into memory → modify it in place → write it back. If the page is full, split it into two and update the parent. This is <em>random I/O</em> — you jump to a specific spot on disk for each write.</p>
+
+  <p><strong>The trade-off:</strong> Reads are fast and predictable — one key lives in exactly one place. Writes require seeking to that place on disk, which is the slower part.</p>
+
+  <h3>LSM Tree — Log-Structured Merge Tree (Cassandra, RocksDB, ScyllaDB)</h3>
+
+  <p>Imagine instead of updating the filing cabinet every time something changes, you just write new notes on a scratchpad on your desk. Later, when the scratchpad fills up, you file everything away neatly. Background workers periodically clean up duplicates.</p>
+
+  <p>The core rule: <strong>never update data in place. Always append.</strong></p>
+
+  <div class="arch-diagram">A write arrives:
+
+  Step 1 → Append to the WAL (a crash-recovery log on disk)
+            This makes the write durable immediately.
+
+  Step 2 → Add to the MemTable (an in-memory sorted buffer)
+            Fast — it's just RAM.
+
+  Step 3 → Return OK to the user.  Done.
+
+  ─────────────────────────────────
+  MemTable fills up (background):
+
+  Step 4 → Flush to an SSTable (a sorted, immutable file on disk)
+            Written sequentially — no jumping around on disk, no overwriting.
+
+  ─────────────────────────────────
+  Compaction (background, doesn't block writes):
+
+  Step 5 → Merge multiple SSTables into one.
+            Throw away deleted or outdated entries.
+            Keep disk tidy.</div>
+
+  <p><strong>Why this is fast for writes:</strong> Sequential writes are dramatically faster than random writes at every layer of the hardware stack. An NVMe SSD writing sequentially can be 10–100× faster than the same drive doing random writes. LSM trees turn every write into an append — you never seek to a specific disk location.</p>
+
+  <p><strong>The catch — reads are harder:</strong> A key might be in the MemTable. Or in one of several SSTable files on disk. A read has to check all of them, newest first.</p>
+
+  <p><em>The fix:</em> <strong>Bloom filters.</strong> Each SSTable has a tiny companion filter that can answer one question fast: "is this key definitely NOT in this file?" If yes — skip the file entirely. False positive rate is ~1% (it'll occasionally say "maybe" when the key isn't there, but never "no" when it is). Most files get skipped without opening.</p>
+
+  <h3>The three LSM trade-offs</h3>
+
+  <p>LSM trees make one big win (fast writes) in exchange for three ongoing costs:</p>
+
+  <div class="callout">
+    <span class="callout-label">Read amplification</span>
+    A single read may need to check the MemTable plus several SSTable files across multiple levels. Bloom filters make this manageable — most files are skipped — but reads are more work than in a B-Tree where the key is always in one place.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Write amplification</span>
+    A key written once at ingestion might be physically rewritten 10–30× over its lifetime as it moves through compaction cycles — merged from level 0 → level 1 → level 2 → ... Each compaction rewrites all the SSTables it touches. You're paying with disk I/O and flash endurance in exchange for fast initial ingestion.
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Space amplification</span>
+    Between compactions, multiple versions of the same key exist across different SSTable files — the old version and the new one. The stale copy is only cleaned up when compaction runs. This means your disk usage temporarily exceeds the logical size of your data. Provision extra headroom and monitor during compaction windows.
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Discord's exact failure mode</span>
+    Discord ran Cassandra (LSM) for trillions of messages. During compaction, JVM garbage collection pauses caused P99 read latencies to spike to 40–125ms on hot partitions (a popular Discord server's channel = one hot partition). Compaction competes for the same disk I/O as live reads. They migrated to <strong>ScyllaDB</strong> — a C++ reimplementation of the same data model, without the JVM and without GC pauses. Result: 177 nodes → 72 nodes, P99 → ~15ms.
+  </div>
+
+  <h3>When to use which</h3>
+
+  <table>
+    <thead>
+      <tr><th>Choose B-Tree when</th><th>Choose LSM when</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Reads far outnumber writes</td>
+        <td>Writes are the bottleneck (events, logs, time-series, messages)</td>
+      </tr>
+      <tr>
+        <td>Predictable read latency matters</td>
+        <td>Sustained ingestion rate matters more than read speed</td>
+      </tr>
+      <tr>
+        <td>Point lookups and range scans both frequent</td>
+        <td>Mostly append workloads — you rarely update old data</td>
+      </tr>
+      <tr>
+        <td>PostgreSQL, MySQL</td>
+        <td>Cassandra, ScyllaDB, RocksDB (embedded in CockroachDB, TiKV, Kafka Streams)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">RocksDB is everywhere</span>
+    RocksDB (Facebook's fork of LevelDB) is embedded inside: CockroachDB (storage layer), TiKV (TiDB's storage), Kafka Streams state stores, MyRocks (Facebook's MySQL storage engine). When you use these systems, you're using an LSM tree whether you know it or not.
+  </div>
+
+
+  <!-- PART 5 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 5 — Sharding</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>Sharding: Splitting the Write Bottleneck</h2>
+  <p>Sharding splits your dataset across multiple independent primary nodes. Each node is a full primary for its own slice. Now you're scaling write capacity in parallel.</p>
+
+  <h3>Range sharding</h3>
+  <p>Carve the key space into contiguous ranges. Assign each range to a shard. Used by HBase, Spanner, CockroachDB.</p>
+  <p><strong>Pro:</strong> Range scans are efficient — all records between two timestamps live on one shard.<br>
+  <strong>Classic trap:</strong> Monotonically increasing keys (auto-increment IDs, timestamps) mean every new write lands on the <em>last</em> shard. Hot spot while all others sit idle.</p>
+
+  <h3>Hash sharding</h3>
+  <p><code>shard = hash(key) mod N</code>. Even distribution, no hot tail.</p>
+  <p><strong>The mod-N problem:</strong> Add one shard — N becomes N+1 — and almost every key maps to a different shard. You have to move nearly the entire dataset to rebalance.</p>
+
+  <h3>Consistent hashing — the solution</h3>
+  <p>Proposed by Karger et al. (1997). Made famous by Amazon Dynamo.</p>
+  <ol>
+    <li>Map both keys and nodes onto a virtual ring using the same hash function.</li>
+    <li>A key is owned by the nearest node clockwise on the ring.</li>
+    <li>Add a node: it takes over only the keys between itself and its predecessor.</li>
+    <li>Remove a node: its keys transfer to the successor.</li>
+    <li><strong>Only ~1/N keys move</strong> during any node add/remove. Everything else stays put.</li>
+  </ol>
+
+  <div class="arch-diagram">Ring (hash space 0 → 2^32):
+
+  Node A (pos 0)  →  Node B (pos 100)  →  Node C (pos 200)  →  [back to A]
+
+  key "user:123" hashes to pos 85 → owned by Node B (nearest clockwise)
+  key "user:456" hashes to pos 210 → owned by Node A (wraps around)
+
+  Add Node D at pos 150:
+    → Only keys 100..150 (previously owned by C) move to D
+    → Everything else: untouched</div>
+
+  <h3>Virtual nodes (vnodes) — Cassandra's refinement</h3>
+  <p>Instead of placing each physical machine at one point on the ring, assign each node <strong>multiple virtual positions</strong> (Cassandra historically used 256 vnodes per physical node). This:</p>
+  <ul>
+    <li>Smooths distribution when hardware is heterogeneous</li>
+    <li>Makes adding/removing a node a gradual, parallel operation — load transfers from many small ranges instead of one big one</li>
+  </ul>
+
+  <h3>Hot spots — the celebrity problem</h3>
+  <p>Consistent hashing distributes keys evenly across normal load. But a celebrity posts something: millions of requests now hammer the <em>single shard</em> holding that user's key. The shard's throughput limit doesn't care about your hashing strategy.</p>
+  <p><strong>Mitigations:</strong></p>
+  <ul>
+    <li>Append a small random suffix to hot keys: <code>user:123_0</code> through <code>user:123_9</code>. Spread reads across 10 shards. Aggregate on read.</li>
+    <li>Cache the hot entity aggressively in Redis with a very short TTL.</li>
+    <li>Give it a dedicated fast path — separate read replicas for top-N hot entities.</li>
+  </ul>
+
+  <h3>Instagram's 64-bit ID scheme — sharding done right</h3>
+  <p>Instagram needed unique IDs that were time-sortable, generated at high throughput, and required no central ID service. Their solution: a 64-bit integer with three packed fields, generated inside a PostgreSQL stored procedure.</p>
+
+  <div class="arch-diagram">64-bit ID structure:
+
+  [ 41 bits: millisecond timestamp ][ 13 bits: shard ID ][ 10 bits: sequence ]
+
+  → 41 bits: time-sortable, ~69 years of headroom from epoch
+  → 13 bits: up to 8,192 logical shards (each a PostgreSQL schema)
+  → 10 bits: 1,024 IDs per millisecond per shard
+
+  No external service. IDs sort chronologically. Range queries are natural.
+  Instagram: 30M+ users, ~12 engineers.</div>
+
+  <h3>Vitess — sharding as middleware</h3>
+  <p>YouTube's MySQL was approaching the write throughput limit of a single machine. Rather than rewrite every query to be shard-aware, they built <strong>Vitess</strong>: a middleware layer that speaks MySQL protocol, pools connections, rewrites queries transparently, and handles resharding by splitting ranges automatically. Applications see one database. Vitess is now a CNCF graduated project — Slack adopted it to scale their entire MySQL fleet. PlanetScale is built on top of it.</p>
+
+  <h3>Cross-shard queries and distributed transactions</h3>
+  <p>A query that touches one shard is cheap. A query that crosses shards becomes <strong>scatter-gather</strong>: fan out to every relevant shard, collect results, merge in the application layer. And distributed transactions (atomically update rows on two different shards) lose the single-node ACID guarantees you relied on. This is the cost of sharding.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Rule of thumb</span>
+    Add sharding when you are forced to, not a moment before. The operational complexity — cross-shard queries, distributed transactions, resharding operations, shard mapping maintenance — is substantial. Exhaust vertical scaling and caching first.
+  </div>
+
+
+  <!-- PART 6 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 6 — Consistency, Quorums & Eventual Consistency</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>CAP, PACELC, and Quorums</h2>
+  <p>See <strong>Lesson 01</strong> for the full CAP and PACELC treatment. The key extension here is <em>quorums</em> — how systems like Cassandra and DynamoDB implement tunable consistency at the data level.</p>
+
+  <h3>Quorums: R + W &gt; N</h3>
+  <p>You have <strong>N</strong> replicas of every piece of data. A write succeeds when <strong>W</strong> replicas acknowledge it. A read succeeds when <strong>R</strong> replicas respond.</p>
+
+  <p><strong>The key insight:</strong> when R + W &gt; N, the read set and write set must overlap by at least one replica. That replica holds the latest write — so you're guaranteed to read it.</p>
+
+  <div class="arch-diagram">Classic Cassandra/Dynamo config: N=3, R=2, W=2
+
+  Replicas: [Node A] [Node B] [Node C]
+
+  Write: W=2 → 2 of 3 nodes must confirm (can tolerate 1 failure)
+  Read:  R=2 → 2 of 3 nodes respond → at least one overlaps with the write set
+
+  R + W = 4 > N = 3 → guaranteed to read latest write ✓
+
+  Tuning the dial:
+    W=1 → writes fast, risk data loss if that node fails before propagation
+    W=N → writes slow, very durable, fragile to node failures
+    R=1 → reads fast, may read stale data
+    R=N → reads slow, always fresh</div>
+
+  <div class="callout">
+    <span class="callout-label">DynamoDB exposes this</span>
+    DynamoDB offers "eventually consistent reads" (R=1 effectively) and "strongly consistent reads" (R quorum). Strong reads cost 2× the read capacity units. This is you literally paying for the R + W &gt; N overlap.
+  </div>
+
+  <h3>The Amazon Dynamo paper (SOSP 2007) — know this cold</h3>
+  <p>The blueprint for eventually consistent distributed systems. Five techniques that a generation of NoSQL databases borrowed directly:</p>
+
+  <table>
+    <thead>
+      <tr><th>Technique</th><th>What it solves</th><th>How it works</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Consistent hashing + vnodes</strong></td>
+        <td>Even distribution, minimal data movement on topology change</td>
+        <td>As covered in Part 5</td>
+      </tr>
+      <tr>
+        <td><strong>Sloppy quorums + hinted handoff</strong></td>
+        <td>Availability during node failures</td>
+        <td>If a target replica is down, a nearby healthy node accepts the write and holds it as a "hint." When the target recovers, the hint is delivered.</td>
+      </tr>
+      <tr>
+        <td><strong>Vector clocks</strong></td>
+        <td>Conflict detection</td>
+        <td>Each value version carries a clock tracking which node wrote it and when. Tells you whether two writes are causally related or genuinely concurrent.</td>
+      </tr>
+      <tr>
+        <td><strong>Merkle trees</strong></td>
+        <td>Efficient anti-entropy / replica repair</td>
+        <td>Each replica builds a hash tree over its key ranges. Compare tree roots to quickly find which subtree has diverged. Sync only the differing keys, not the full dataset.</td>
+      </tr>
+      <tr>
+        <td><strong>P99.9 SLA framing</strong></td>
+        <td>Honest latency targets</td>
+        <td>Dynamo tracked SLAs at the 99.9th percentile (300ms), not averages. Averages hide the tail. Users at the tail are your most-active users — the ones who generate the most requests.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><strong>Systems that drew directly from Dynamo:</strong> Cassandra, Riak, Voldemort, the modern DynamoDB service.</p>
+
+
+  <!-- PART 7 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 7 — Distributed Consensus</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>Distributed Consensus: Strong Consistency at Scale</h2>
+
+  <h3>Why 2-Phase Commit (2PC) fails</h3>
+  <p>2PC is the classic solution for distributed transactions:</p>
+  <ol>
+    <li>Coordinator sends <em>prepare</em> to every participant</li>
+    <li>Each participant locks rows and replies <em>yes</em> or <em>no</em></li>
+    <li>If all say yes → coordinator sends <em>commit</em></li>
+  </ol>
+  <p><strong>The fatal flaw:</strong> If the coordinator crashes after sending <em>prepare</em> but before sending <em>commit</em>, every participant sits holding locks indefinitely. They can't safely commit. They can't safely abort. The entire system blocks until the coordinator recovers. This is called a <strong>blocking protocol</strong> — and it's why 2PC doesn't work as a foundation for highly available systems.</p>
+
+  <h3>Raft — consensus without a single coordinator</h3>
+  <p>Published at USENIX ATC 2014. Designed to be easier to understand than Paxos while offering identical guarantees.</p>
+
+  <p><strong>Core properties:</strong></p>
+  <ul>
+    <li><strong>Majority voting:</strong> A proposal is accepted only when more than half the nodes agree. With 2F+1 nodes, you tolerate F failures and still make progress.</li>
+    <li><strong>No split brain:</strong> You can never have two conflicting majorities simultaneously. Majority A and majority B must overlap — and a node in both can't agree to two conflicting values.</li>
+  </ul>
+
+  <p><strong>How it works:</strong></p>
+  <ol>
+    <li>One node wins a leader election.</li>
+    <li>All writes flow through the leader into a replicated log.</li>
+    <li>Followers confirm each entry. Once a majority confirms: committed.</li>
+    <li>Leader dies → remaining nodes elect a new leader. No human intervention needed.</li>
+  </ol>
+
+  <p><strong>Where Raft is running right now:</strong> etcd (Kubernetes uses this), CockroachDB, TiKV (TiDB's storage engine), HashiCorp Consul.</p>
+
+  <h3>Google Spanner — globally linearisable SQL</h3>
+  <p>Published at OSDI 2012. Solved what everyone thought was impossible: globally distributed, strongly consistent, ACID SQL transactions.</p>
+
+  <p><strong>The key innovation: TrueTime.</strong> Google puts GPS receivers and atomic clocks in every data center. The TrueTime API returns a bounded uncertainty interval — earliest and latest possible current time — with epsilon (uncertainty) typically under 7ms.</p>
+
+  <div class="arch-diagram">TrueTime usage for commit ordering:
+
+  Transaction T commits at TrueTime.now() = [t_earliest, t_latest]
+
+  Problem: if we assign timestamp t_latest and reveal the commit immediately,
+           another transaction starting at t_latest+1 might have started *before*
+           T was actually committed in real time.
+
+  Solution: COMMIT WAIT
+    → Wait out the full uncertainty window before revealing the commit
+    → After ~7ms, we know for certain that real time has passed t_latest
+    → No transaction starting after T was committed can have an earlier timestamp
+    → Timestamp order = real-time order = external consistency ✓</div>
+
+  <p>This commit wait of ~7ms is the cost of global linearisability. Spanner powers Google Ads, the F1 database, and Google Cloud Spanner.</p>
+
+  <h3>NewSQL without GPS clocks</h3>
+  <p>Not everyone has GPS receivers. A generation of databases applied Spanner's architecture with software clocks instead:</p>
+
+  <table>
+    <thead>
+      <tr><th>System</th><th>Clock approach</th><th>Cross-region commit latency</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>CockroachDB</strong></td>
+        <td>Hybrid Logical Clocks (HLC) — physical wall clock + logical counter. Tracks causality within cluster.</td>
+        <td>Tens of ms (no hard TrueTime bound)</td>
+      </tr>
+      <tr>
+        <td><strong>TiDB</strong> (TiKV + TiFlash)</td>
+        <td>Timestamp Oracle (TSO) — centralized timestamp service, not HLC</td>
+        <td>~10ms within region</td>
+      </tr>
+      <tr>
+        <td><strong>YugabyteDB</strong></td>
+        <td>HLC, similar to CockroachDB</td>
+        <td>Tens of ms</td>
+      </tr>
+      <tr>
+        <td><strong>Google Spanner</strong></td>
+        <td>TrueTime (GPS + atomic clocks)</td>
+        <td>~7ms commit wait</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>These systems give you SQL + ACID over Raft-replicated, range-sharded storage. The cost is commit latency and operational complexity — but far better than a fragile 2PC coordinator holding the system hostage.</p>
+
+
+  <!-- PART 8 -->
+  <div class="part-divider">
+    <div class="part-divider-line"></div>
+    <div class="part-divider-label">Part 8 — Reference Architecture & Case Studies</div>
+    <div class="part-divider-line"></div>
+  </div>
+
+  <h2>Reference Architecture</h2>
+  <p>The canonical large-scale database architecture. Every layer was added to solve a specific exhausted ceiling.</p>
+
+  <div class="arch-diagram">                    ┌─────────────────────────────────┐
+                    │         Load Balancer           │
+                    └────────────┬────────────────────┘
+                                 │
+               ┌─────────────────┼─────────────────┐
+               ▼                 ▼                  ▼
+        [App Server]      [App Server]       [App Server]   ← stateless
+               │                 │                  │
+               └─────────────────┼──────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │    Cache Cluster         │   ← Redis / Memcached
+                    │  (absorbs 95-99% reads)  │
+                    └────────────┬────────────┘
+                                 │ cache miss
+                    ┌────────────▼────────────────────────────────┐
+                    │           Sharded Primary Tier               │
+                    │                                              │
+                    │  [Shard A Primary] → [Replica] [Replica]    │
+                    │  [Shard B Primary] → [Replica] [Replica]    │
+                    │  [Shard C Primary] → [Replica] [Replica]    │
+                    └────────────┬────────────────────────────────┘
+                                 │ writes emit events
+                    ┌────────────▼────────────┐
+                    │       Kafka              │   ← async event pipeline
+                    └──┬────────────────┬─────┘
+                       │                │
+               ┌───────▼───────┐ ┌──────▼──────────────┐
+               │ Search Index  │ │ Analytic Store        │
+               │ (Elasticsearch│ │ (BigQuery, Redshift,  │
+               │  / OpenSearch)│ │  ClickHouse)          │
+               └───────────────┘ └──────────────────────┘</div>
+
+  <p>Why each layer exists:</p>
+  <ul>
+    <li><strong>Read replicas:</strong> single primary read throughput was exhausted</li>
+    <li><strong>Cache:</strong> replica throughput or latency was unacceptable</li>
+    <li><strong>Sharding:</strong> single primary write throughput was exhausted</li>
+    <li><strong>Kafka:</strong> synchronous fan-out to downstream systems was too slow and too fragile</li>
+    <li><strong>Analytic store:</strong> OLAP queries on the OLTP database were killing transaction latency</li>
+  </ul>
+
+  <h2>Case Studies</h2>
+
+  <div class="case-study-card">
+    <div class="case-study-header">Discord — MySQL → Cassandra → ScyllaDB (2017–2023)</div>
+    <div class="case-study-body">
+      <ul>
+        <li><strong>2017, billions of messages:</strong> MySQL couldn't keep up → migrated to Cassandra (177 nodes). Consistent hashing + LSM for write-heavy message storage.</li>
+        <li><strong>2023, trillions of messages:</strong> JVM GC pauses during compaction caused P99 read latencies of 40–125ms on hot partitions (a popular server's channel = one hot partition).</li>
+        <li><strong>Fix 1 (service layer):</strong> Rust-based data services that coalesce concurrent reads for the same key into a single database request. Request coalescing at the application level.</li>
+        <li><strong>Fix 2 (database):</strong> Migrated to ScyllaDB — C++ reimplementation of Cassandra's data model. No JVM, no GC pauses.</li>
+        <li><strong>Result:</strong> 177 nodes → 72 nodes. P99 latency → ~15ms.</li>
+        <li><strong>Lesson:</strong> Consistency model, storage engine choice, and hot partition handling all interact at once. You can't optimise them independently.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="case-study-card">
+    <div class="case-study-header">Facebook — Memcached at 1B requests/second (2013)</div>
+    <div class="case-study-body">
+      <ul>
+        <li>Over 1 billion cache requests/second across clusters. Trillions of items in cache at any moment.</li>
+        <li><strong>Problem 1: Thundering herd.</strong> Solution: Memcached leases — only the first requester to miss a key can write back to that slot. Others wait. Eliminates both stampede and stale-set races.</li>
+        <li><strong>Problem 2: Cross-region consistency.</strong> Solution: McSqueal daemons tail MySQL binlogs and broadcast cache invalidation messages to every region the moment a write commits.</li>
+        <li><strong>Lesson:</strong> At this scale, caching is not a performance nicety. It's load-bearing infrastructure with its own consistency protocol.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="case-study-card">
+    <div class="case-study-header">Instagram — 12 engineers, 30M+ users, sharded PostgreSQL (2012)</div>
+    <div class="case-study-body">
+      <ul>
+        <li>64-bit IDs generated inside a PostgreSQL stored procedure — no external ID service.</li>
+        <li>Structure: 41 bits timestamp | 13 bits shard ID | 10 bits sequence. Time-sortable, naturally partitioned, 1,024 IDs/ms/shard.</li>
+        <li>Physical infrastructure: a handful of PostgreSQL machines, each hosting hundreds of logical shards as separate schemas.</li>
+        <li><strong>Lesson:</strong> A clean sharding design chosen early lets a tiny team scale far. The complexity was in the schema design, not the infrastructure count.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="case-study-card">
+    <div class="case-study-header">YouTube / Slack — Vitess (sharding as middleware)</div>
+    <div class="case-study-body">
+      <ul>
+        <li>YouTube's MySQL approached the write throughput limit of a single machine.</li>
+        <li>Vitess: middleware layer speaking MySQL protocol. Apps see one database. Vitess handles connection pooling, query rewriting, routing, and automatic resharding.</li>
+        <li>Slack adopted Vitess to horizontally scale their entire MySQL fleet without rewriting application code.</li>
+        <li>Now: CNCF graduated project. PlanetScale is built on top of Vitess.</li>
+        <li><strong>Lesson:</strong> Solve the hard distributed problem once in a middleware layer. Application teams keep writing plain SQL.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="case-study-card">
+    <div class="case-study-header">Google Spanner — globally linearisable SQL (OSDI 2012)</div>
+    <div class="case-study-body">
+      <ul>
+        <li>Solved what was assumed impossible: globally distributed, strongly consistent ACID SQL across data centers on different continents.</li>
+        <li>TrueTime API provides bounded clock uncertainty (epsilon ~7ms). Commit wait = wait out uncertainty window before revealing commit. Timestamp order = real-time order.</li>
+        <li>Powers Google Ads (F1 paper), Google Cloud Spanner.</li>
+        <li>CockroachDB / TiDB / YugabyteDB replicate this architecture using Hybrid Logical Clocks instead of GPS hardware.</li>
+        <li><strong>Lesson:</strong> Global ACID is achievable if you're willing to engineer the clocks and absorb a few ms of commit latency.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>The Meta Lesson</h2>
+  <p>Every layer in this stack is a cost — a real, ongoing operational cost that you pay only when the simpler option below it is exhausted:</p>
+
+  <table>
+    <thead>
+      <tr><th>Layer added</th><th>What you gain</th><th>What you inherit</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Read replica</td>
+        <td>Read scale, hot standby</td>
+        <td>Replication lag, read-your-own-writes anomalies, failover complexity</td>
+      </tr>
+      <tr>
+        <td>Cache</td>
+        <td>Absorb 95–99% of reads</td>
+        <td>Cache invalidation complexity, thundering herd risk, stale reads</td>
+      </tr>
+      <tr>
+        <td>Sharding</td>
+        <td>Write scale (parallel primaries)</td>
+        <td>Lost single-node ACID, scatter-gather queries, distributed transaction complexity</td>
+      </tr>
+      <tr>
+        <td>Eventual consistency</td>
+        <td>Global availability, low-latency reads</td>
+        <td>Convergence windows, conflict resolution, application-level anomaly handling</td>
+      </tr>
+      <tr>
+        <td>Distributed consensus (Raft/Spanner)</td>
+        <td>Global strong consistency</td>
+        <td>Commit latency, operational complexity, clock infrastructure</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Discord didn't start with ScyllaDB and request coalescing. Instagram didn't start with thousands of logical shards. Facebook didn't start with leases and McSqueal daemons. They started with the simplest thing that could work. Every layer was earned by exhausting the one below it.</p>
+
+
+  <!-- Interview Playbook -->
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <!-- Q1 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Classic system design opener</div>
+          <div class="playbook-q-text">"Design Twitter's tweet storage system to handle 100M daily active users."</div>
+          <div class="playbook-q-probe">Follow-up: "At what point would you add a cache? What about sharding?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "I'd start with a single PostgreSQL primary — a well-tuned instance handles 10K–50K simple queries/second and can serve millions of users. For tweet reads, which are far more frequent than writes, I'd add read replicas early, routing all SELECTs to replicas and writes to the primary. I'd use semi-synchronous replication — one sync replica for durability, async for read scale. The first cache layer goes in when replica throughput becomes the bottleneck or we need sub-millisecond latency: Redis with cache-aside pattern, TTL of minutes for tweet timelines. Cache key per user timeline, invalidated on new tweet from followed accounts. I'd shard only when the primary's write throughput is exhausted — probably around 10K tweets/second sustained. Tweet IDs would follow Instagram's pattern: timestamp prefix + shard ID + sequence, making them time-sortable without a central ID service."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Cache goes in when read replica throughput is insufficient or when we need P99 latency under 10ms — a replica round-trip is 5–30ms, Redis is sub-millisecond. Sharding goes in when the single primary WAL becomes the bottleneck — all writes serialise through one disk. The test is write throughput saturation: primary CPU pegged, WAL I/O at ceiling, write latency climbing. Until then, sharding adds complexity (cross-shard queries lose ACID, scatter-gather for fan-out reads) without benefit."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q2 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Storage engine internals</div>
+          <div class="playbook-q-text">"Why did Discord migrate from Cassandra to ScyllaDB? What does that tell you about choosing a database?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's write amplification and how does it affect your decision?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Cassandra uses an LSM tree storage engine — great for write-heavy workloads because it converts random writes into sequential ones. But the trade-off is background compaction: periodically merging SSTables, which competes for I/O bandwidth with live traffic. Cassandra's JVM implementation adds GC pauses on top of that. Discord was storing trillions of messages; hot partitions (popular channel's message history) had P99 read latencies of 40–125ms during compaction windows. ScyllaDB reimplements Cassandra's data model and consistency protocol in C++, eliminating JVM GC entirely. They went from 177 nodes to 72 and P99 dropped to ~15ms. The lesson: your storage engine and your runtime aren't independent choices. Compaction + GC stalls interact and you have to size and operate for both."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Write amplification is when a single logical write is physically rewritten multiple times as data moves through compaction cycles. In LSM trees, a key written once at ingestion may be rewritten 10–30× over its lifetime as SSTables merge. This costs CPU, I/O bandwidth, and flash endurance. B-trees avoid write amplification from compaction, but do random in-place writes — which is their own I/O cost. So write amplification isn't bad per se; it's the trade-off for sequential ingestion. The question is whether your workload justifies it: high write throughput (event logs, messaging, time-series) → accept write amplification for sequential writes. Read-heavy with moderate writes → B-tree, one key in one place, reads are simpler."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q3 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Consistent hashing deep dive</div>
+          <div class="playbook-q-text">"Why doesn't simple hash(key) mod N work for database sharding? What's the alternative?"</div>
+          <div class="playbook-q-probe">Follow-up: "What are virtual nodes and why does Cassandra use them?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "mod N breaks on topology change. Add one shard — N becomes N+1 — and almost every key maps to a different shard. You have to move most of your dataset to rebalance, which is operationally painful and dangerous. Consistent hashing solves this by mapping both keys and nodes onto a virtual ring using the same hash function. A key is owned by the nearest node clockwise on the ring. When you add a node, it only takes over keys between itself and its predecessor on the ring — roughly 1/N of all keys. When you remove a node, only its keys transfer to its successor. Everything else is untouched. This is what Cassandra, DynamoDB, and the original Amazon Dynamo paper use."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "With one physical node at one ring position, distribution can be uneven — especially with heterogeneous hardware. If you have three nodes, they might carve the ring into chunks of 60%, 30%, and 10% by chance. Virtual nodes assign each physical machine multiple positions on the ring (Cassandra: historically 256 per node). This spreads each machine's responsibility across many small ring segments instead of one big one. Benefits: (1) more even distribution regardless of node count, (2) when you add a node, it picks up load from many predecessors in parallel instead of one big transfer, (3) heterogeneous hardware — a more powerful machine can be assigned more vnodes."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q4 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q4 — Consensus and strong consistency</div>
+          <div class="playbook-q-text">"How does Google Spanner achieve globally linearisable transactions? Is that achievable without GPS clocks?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's the commit wait and what's its latency cost?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Spanner's key innovation is TrueTime — GPS receivers and atomic clocks in every Google data center. The TrueTime API returns not a single timestamp but an interval: [earliest, latest] possible current time. The uncertainty (epsilon) is typically under 7ms. Spanner uses this to enforce that timestamp order equals real-time order: before revealing a committed transaction, it waits out the full uncertainty window. After that wait, no transaction starting after T could have been assigned an earlier timestamp. This is external consistency — stronger than linearisability. Without GPS clocks, CockroachDB and TiDB use Hybrid Logical Clocks — a physical clock plus a logical counter — to track causality within the cluster. They get linearisable single-shard transactions and serialisable cross-shard transactions, but cross-region commits take tens of milliseconds rather than Spanner's 7ms commit wait, because they can't bound clock uncertainty as tightly."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Commit wait is the time Spanner blocks before revealing a committed transaction — it's waiting out the TrueTime uncertainty interval. Typically ~7ms per transaction that commits. This is the price of global linearisability. For most OLTP workloads writing a few rows, 7ms is acceptable. For high-frequency trading or real-time bidding, it may not be. This is why Spanner targets Google Ads (billions of ad auctions per day) but not nanosecond-latency financial transactions. The trade-off: 7ms commit wait in exchange for the ability to run strong ACID transactions across data centers on different continents."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q5 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q5 — Applied to applyGOAT</div>
+          <div class="playbook-q-text">"Your AI career platform hits 500K users. Walk me through every scaling decision you'd make, in order."</div>
+          <div class="playbook-q-probe">Follow-up: "Where would you shard first and what's your sharding key?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "First: vertical scale PostgreSQL and tune it — connection pooling via PgBouncer, proper indexing (already covered in Lesson 02), query optimisation. This takes you well past 100K users. Second: add read replicas. Most of applyGOAT's load is reads — users viewing their resumes, cover letters, job matches. Route reads to replicas, writes to primary. Use semi-synchronous replication. Pin users to primary for a few seconds after their own writes to avoid read-your-own-writes issues. Third: add Redis caching. Cache AI-generated outputs (resume analyses, cover letters) with TTL of 1 hour — these are expensive to compute and rarely change. Cache job listing data with TTL of minutes. Explicitly invalidate when a user uploads a new resume. Fourth: if the platform goes into millions of users and write throughput to the primary is saturating, shard. The natural key is tenant_id or user_id — applyGOAT is already multi-tenant, so shard by tenant bucket. AI generation requests emit events to Kafka for async processing — the analysis pipeline doesn't need to be synchronous with the HTTP response."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Shard by user_id hash — not tenant_id if tenants are very unequal in size, because a large enterprise client becomes a hot shard. Use consistent hashing so adding shards doesn't require moving most data. Generate IDs using Instagram's approach: timestamp prefix + shard ID + sequence, generated in a PostgreSQL function on each shard. This keeps IDs time-sortable and eliminates a central ID service. The cross-shard query problem is manageable for applyGOAT because most queries are per-user (in-shard). Aggregations (analytics across all users) go to the analytic store, not the OLTP database."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch for</span>
+    Many candidates jump straight to sharding when asked about scale. Strong answer: name which specific bottleneck forces you to shard (WAL throughput ceiling, not "it's slow"), why replicas + cache don't solve it (those only help reads), and what you lose when you shard (cross-shard ACID, scatter-gather queries). The decision should sound costly and reluctant, not eager.
+  </div>
+
+
+  <!-- Quiz -->
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <!-- Primary sources -->
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong>Dynamo: Amazon's Highly Available Key-Value Store (SOSP 2007)</strong><br>
+    The paper that defined eventual consistency architecture for a generation. Read sections on consistent hashing, sloppy quorums, vector clocks, and Merkle trees. Everything Cassandra and DynamoDB was built from.
+  </p>
+  <p>
+    <strong>Spanner: Google's Globally Distributed Database (OSDI 2012)</strong><br>
+    The TrueTime section is the key insight. F1 paper is the companion on how Spanner powers Google Ads.
+  </p>
+  <p>
+    <strong>Scaling Memcache at Facebook (NSDI 2013)</strong><br>
+    The leases and McSqueal sections. Understand how cache consistency works when you have billions of requests/second across regions.
+  </p>
+  <p>
+    <strong>Discord: How Discord Stores Trillions of Messages (2023)</strong><br>
+    Excellent engineering blog post. Covers the Cassandra → ScyllaDB migration, request coalescing in Rust, and hot partition handling. Concrete numbers throughout.
+  </p>
+  <p>
+    <strong>Designing Data-Intensive Applications — Kleppmann (Chapters 5, 6, 7, 9)</strong><br>
+    Ch. 5: replication. Ch. 6: partitioning (sharding). Ch. 7: transactions. Ch. 9: consistency and consensus. The canonical reference.
+  </p>
+
+  <!-- Navigation -->
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0002-database-indexing.html">Lesson 02 — Database Indexing &amp; Internals</a> &nbsp;|&nbsp;
+    <strong>See also:</strong> <a href="0001-cap-theorem.html">Lesson 01 — CAP Theorem (full PACELC treatment)</a>
+  </div>
+
+  <!-- Ask teacher -->
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Not sure when applyGOAT actually needs sharding? Confused about how Kafka fits into this picture? Want to reason through what happens to your Pinecone vector index when you shard your PostgreSQL? Not confident you could explain the thundering herd fix in an interview?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 03 &nbsp;·&nbsp; Database Scaling &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<!-- Playbook accordion -->
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<!-- Quiz data -->
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "PostgreSQL's default max_connections is 100 and each connection consumes 5–10 MB RAM. Adding PgBouncer solves this completely. True or false?",
+    options: [
+      "True — PgBouncer multiplexes connections so the database sees far fewer",
+      "False — PgBouncer moves the bottleneck but the database engine still processes a finite number of queries in parallel",
+      "True — PgBouncer converts connection limit into a CPU limit instead",
+      "False — PgBouncer increases max_connections automatically"
+    ],
+    answer: 1,
+    explanation: "PgBouncer moves the connection bottleneck to the pooler, but the database engine itself has a finite parallel query throughput. You've bought headroom, not eliminated the ceiling. The deeper limits — throughput, WAL bottleneck — are unchanged."
+  },
+  {
+    q: "A user updates their profile on your app. Their very next request is routed to a read replica that hasn't caught up yet. Which anomaly is this?",
+    options: [
+      "Monotonic reads violation",
+      "Phantom reads",
+      "Read-your-own-writes violation",
+      "Dirty read"
+    ],
+    answer: 2,
+    explanation: "Read-your-own-writes: the user made a write and their immediately following read returned stale data. Fix: pin that user's reads to the primary (or a replica at that LSN position) for a short window after any write."
+  },
+  {
+    q: "Your cache hit rate drops from 99% to 95%. What happens to your database load (assuming 1,000 total requests/second)?",
+    options: [
+      "It increases by 4% — from 10 to 10.4 QPS",
+      "It doubles — from 10 to 20 QPS",
+      "It quintuples — from 10 to 50 QPS",
+      "It decreases because fewer requests need full data"
+    ],
+    answer: 2,
+    explanation: "At 99% hit rate, DB receives 1% = 10 QPS. At 95% hit rate, DB receives 5% = 50 QPS. That's a 5× increase from a 4 percentage point drop in hit rate. Hit rate is the highest-leverage metric in your caching layer."
+  },
+  {
+    q: "You add a new database shard (N goes from 4 to 5) and use simple hash(key) mod N routing. What's the impact?",
+    options: [
+      "Only ~20% of keys need to move — those that belonged to the last shard",
+      "Almost all keys map to a different shard and the entire dataset must be reshuffled",
+      "Only keys on the new shard change — all others are stable",
+      "No keys move; mod N is always backward compatible"
+    ],
+    answer: 1,
+    explanation: "With mod N, changing N changes the mapping for almost every key. This is why consistent hashing exists: it guarantees only ~1/N keys move when a node is added or removed."
+  },
+  {
+    q: "Cassandra with N=3, R=2, W=2. One node goes down. Can you still read and write?",
+    options: [
+      "No — with one node down, you can't form a quorum for either reads or writes",
+      "Yes for reads only — W=2 needs 2 live nodes but only 1 remains",
+      "Yes for both — R=2 and W=2 both need only 2 of 3 nodes, and 2 remain",
+      "Yes but only if you switch to W=1 temporarily"
+    ],
+    answer: 2,
+    explanation: "With N=3 and one node down, 2 nodes remain. R=2 and W=2 both require exactly 2 nodes — so both reads and writes still satisfy their quorums. This is why N=3, R=2, W=2 is the standard config: tolerates 1 failure while maintaining R+W > N consistency."
+  },
+  {
+    q: "What is the thundering herd problem and what is the 'single-flight' mitigation?",
+    options: [
+      "A hot partition gets hammered by reads; single-flight routes all reads to the primary instead",
+      "A popular cache key expires; thousands of concurrent requests all miss and hit the DB simultaneously; single-flight allows only one request to fetch from DB, the rest wait for that result",
+      "A shard becomes full; single-flight pauses writes while resharding",
+      "A replica falls behind; single-flight stops routing reads to it until it catches up"
+    ],
+    answer: 1,
+    explanation: "Thundering herd: when a hot cache key expires, all concurrent readers see a miss simultaneously and all hit the database at once. Single-flight (request coalescing): only one request is allowed to fetch from the DB per key; all others wait for that single result. Discord implemented this in Rust at the service layer."
+  },
+  {
+    q: "Why did Google Spanner introduce a 'commit wait' of ~7ms before revealing a committed transaction?",
+    options: [
+      "To give replicas time to apply the commit before clients can read it",
+      "To wait for the consensus quorum to confirm the write",
+      "To wait out the TrueTime uncertainty window, ensuring timestamp order equals real-time order",
+      "To throttle write throughput and prevent WAL overflow"
+    ],
+    answer: 2,
+    explanation: "TrueTime returns an interval [t_earliest, t_latest] with uncertainty epsilon ~7ms. By waiting out the full epsilon, Spanner guarantees that real time has passed t_latest before the commit is visible. This means no later-starting transaction can have an earlier timestamp — timestamp order equals real-time order, achieving external consistency."
+  },
+  {
+    q: "Instagram generates IDs as 64-bit integers with a packed structure. Why is this better than a central auto-increment sequence?",
+    options: [
+      "It's faster because PostgreSQL's sequence generator is slow",
+      "It's time-sortable, shard-aware, and generated locally with no central service that could be a bottleneck or SPOF",
+      "It avoids integer overflow that a central sequence would eventually hit",
+      "It's shorter than a UUID and easier to store"
+    ],
+    answer: 1,
+    explanation: "A central sequence is a single point of failure and a throughput bottleneck. Instagram's 64-bit scheme (41b timestamp | 13b shard ID | 10b sequence) is generated inside a PostgreSQL stored procedure on each shard — no external service, no SPOF, time-sortable for natural range queries. This is how 12 engineers scaled to 30M+ users."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>

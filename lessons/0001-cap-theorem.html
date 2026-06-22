@@ -1,0 +1,399 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 01 — CAP Theorem & Consistency Models</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+
+  <!-- Header -->
+  <header class="lesson-header">
+    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 01</div>
+    <div class="pillar-badge">Distributed Systems</div>
+    <h1 class="lesson-title">CAP Theorem &<br>Consistency Models</h1>
+    <p class="lesson-subtitle">The trade-off that governs every database in your stack.</p>
+  </header>
+
+  <!-- The core idea -->
+  <h2>The Precise Definition</h2>
+  <p>CAP theorem (Brewer, 2000) states that a distributed data store can guarantee at most <strong>two</strong> of these three properties simultaneously:</p>
+
+  <table>
+    <thead>
+      <tr><th>Property</th><th>What it means</th><th>Failure scenario</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>C</strong>onsistency</td>
+        <td>Every read receives the most recent write or an error — never stale data</td>
+        <td>Node A and Node B always agree on the current value</td>
+      </tr>
+      <tr>
+        <td><strong>A</strong>vailability</td>
+        <td>Every request receives a (non-error) response — system stays up even if some nodes are down</td>
+        <td>No timeouts, no errors returned to the client</td>
+      </tr>
+      <tr>
+        <td><strong>P</strong>artition Tolerance</td>
+        <td>The system continues operating even if network messages between nodes are dropped or delayed</td>
+        <td>Nodes are split — they can't talk to each other — but system keeps running</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Critical nuance</span>
+    Network partitions <em>always happen</em> in real distributed systems — hardware fails, packets drop. So <strong>P is not optional</strong>. The real choice is: when a partition occurs, do you sacrifice <strong>C</strong> (serve potentially stale data) or <strong>A</strong> (refuse to respond)? Every distributed database makes this choice.
+  </div>
+
+  <!-- Plain English -->
+  <h2>Plain English — The applyGOAT Scenario</h2>
+  <p>Imagine applyGOAT runs on <strong>3 servers</strong> — India, Europe, US — all storing user data. Now the cable between India and Europe is cut. They can't talk. That's a <strong>network partition</strong>.</p>
+
+  <h3>The three properties, no jargon</h3>
+
+  <p><strong>Consistency</strong> — "Give me the truth or give me nothing."<br>
+  A user updates their resume on the India server. One second later they query Europe. Consistency means Europe either returns the <em>updated</em> resume — or returns an error. It <strong>never</strong> silently returns the old one.</p>
+
+  <p><strong>Availability</strong> — "Always respond, no matter what."<br>
+  Even while India and Europe are disconnected, the Europe server keeps responding to every request. No errors, no timeouts. But it might serve yesterday's data — it doesn't know it's stale.</p>
+
+  <p><strong>Partition Tolerance</strong> — "Keep working even when servers can't talk."<br>
+  This one is <strong>not optional</strong>. Network cables get cut in real life. If you can't tolerate partitions, your entire system collapses the moment one connection fails.</p>
+
+  <div class="callout">
+    <span class="callout-label">The real choice</span>
+    Since P is mandatory, the actual decision is: when India and Europe are disconnected and a user queries Europe — what do you do?
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Decision</th><th>What you sacrifice</th><th>What you get</th><th>Called</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Refuse to respond until India confirms the data</td>
+        <td>Availability — users get an error</td>
+        <td>Consistency — data is always accurate</td>
+        <td><strong>CP</strong></td>
+      </tr>
+      <tr>
+        <td>Respond with whatever Europe has, even if stale</td>
+        <td>Consistency — data may be old</td>
+        <td>Availability — users always get a response</td>
+        <td><strong>AP</strong></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    <strong>PostgreSQL</strong> (applyGOAT user accounts): <em>"I'd rather return an error than lie to you."</em> → <strong>CP</strong><br>
+    <strong>Pinecone</strong> (resume vector search): <em>"I'll search what I have, even if it's 2 seconds behind."</em> → <strong>AP</strong>
+  </p>
+
+  <!-- Your stack mapped -->
+  <h2>Your Stack, Mapped to CAP</h2>
+  <p>This is where most engineers stay vague in interviews. Know your own systems precisely.</p>
+
+  <table>
+    <thead>
+      <tr><th>System</th><th>CAP choice</th><th>Why</th><th>Your project</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>PostgreSQL</strong></td>
+        <td>CP</td>
+        <td>Uses WAL and synchronous replication. Under partition, replicas refuse reads to avoid returning stale data. You get consistency or an error — never stale.</td>
+        <td>applyGOAT user accounts, multi-tenant data</td>
+      </tr>
+      <tr>
+        <td><strong>MongoDB</strong></td>
+        <td>Tunable (default AP)</td>
+        <td>Default write concern <code>w:1</code> is AP — writes ack'd before replication. Set <code>w:"majority"</code> + <code>readConcern: "majority"</code> for CP behaviour. Most teams forget to do this.</td>
+        <td>Document storage in your projects</td>
+      </tr>
+      <tr>
+        <td><strong>Pinecone</strong></td>
+        <td>AP</td>
+        <td>Eventual consistency — upserted vectors become queryable within seconds, not instantly. Designed for high availability of vector search at the cost of immediate consistency.</td>
+        <td>RAG retrieval in AI Sales Agent, applyGOAT</td>
+      </tr>
+      <tr>
+        <td><strong>Redis</strong> (if used)</td>
+        <td>AP (default)</td>
+        <td>Master-replica async replication. If master dies, you may lose recent writes. Sentinel/Cluster modes improve this but don't give full CP.</td>
+        <td>Caching layer (if applicable)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Consistency Models Spectrum -->
+  <h2>Consistency Is Not Binary</h2>
+  <p>CAP's "C" is all-or-nothing, but real systems have a spectrum of consistency models. Know these — interviewers probe here.</p>
+
+  <table>
+    <thead>
+      <tr><th>Model</th><th>Guarantee</th><th>Example</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Linearisability</strong><br><em>(strong consistency)</em></td>
+        <td>Operations appear instantaneous and in real-time order. Every reader sees the latest write immediately after it completes.</td>
+        <td>PostgreSQL with synchronous commit</td>
+      </tr>
+      <tr>
+        <td><strong>Sequential consistency</strong></td>
+        <td>All operations appear in some consistent order (same for all nodes), but not necessarily real-time order.</td>
+        <td>Some distributed lock implementations</td>
+      </tr>
+      <tr>
+        <td><strong>Causal consistency</strong></td>
+        <td>Operations that are causally related are seen in order. Unrelated ops can be seen in any order.</td>
+        <td>MongoDB with sessions enabled</td>
+      </tr>
+      <tr>
+        <td><strong>Eventual consistency</strong></td>
+        <td>If no new updates are made, all replicas will eventually converge to the same value. No timing guarantee.</td>
+        <td>Pinecone, DynamoDB default, DNS</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">applyGOAT application</span>
+    Your multi-tenant SaaS has a real trade-off here. User auth and billing data (<strong>PostgreSQL → linearisable</strong>) needs strong consistency — a user must never see a stale subscription state. Resume embeddings in Pinecone (<strong>eventual</strong>) are fine being slightly stale; a 2-second delay before a new resume chunk is searchable is acceptable.
+  </div>
+
+  <!-- PACELC extension -->
+  <h2>Beyond CAP: PACELC</h2>
+  <p>CAP only describes behaviour <em>during a partition</em>. PACELC (Daniel Abadi, 2012) extends it to describe normal operation too:</p>
+  <ul>
+    <li>During a <strong>P</strong>artition → choose <strong>A</strong>vailability or <strong>C</strong>onsistency</li>
+    <li><strong>E</strong>lse (normal operation) → choose <strong>L</strong>atency or <strong>C</strong>onsistency</li>
+  </ul>
+  <p>PostgreSQL is <strong>PC/EC</strong> — consistent during partitions, and consistent (low latency sacrificed for consistency) in normal operation. Pinecone is <strong>PA/EL</strong> — available during partitions, low latency in normal operation (consistency sacrificed).</p>
+  <p><em>Dropping PACELC in an interview when the interviewer only expected CAP = instant seniority signal.</em></p>
+
+  <!-- Interview section -->
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <!-- Q1 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"Explain CAP theorem. How does it apply to system design?"</div>
+          <div class="playbook-q-probe">Follow-up: "Is partition tolerance really optional? When would you ever sacrifice it?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "CAP says a distributed data store can guarantee at most two of: <strong>Consistency</strong> (every read returns the latest write or an error), <strong>Availability</strong> (every request gets a non-error response), and <strong>Partition Tolerance</strong> (the system works even if nodes can't communicate). Since network partitions are unavoidable in real deployments — cables fail, packets drop — the practical trade-off is always between C and A <em>when a failure happens</em>. CP systems like PostgreSQL return an error rather than stale data. AP systems like Pinecone stay available but may serve slightly old results. The right choice depends on business tolerance — financial data needs CP, search and recommendations can tolerate AP."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "Never — not in a real distributed system. Sacrificing partition tolerance means your system stops functioning the moment any two nodes can't communicate — a hardware failure, a network hiccup, anything. The only scenario where you 'don't need' P is a single-node system with no replication, but then it's not a distributed system. CAP's real decision has always been <strong>CP vs AP</strong>, not CA vs CP vs AP."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q2 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied</div>
+          <div class="playbook-q-text">"You're designing a payment service. Walk me through the CAP trade-offs."</div>
+          <div class="playbook-q-probe">Follow-up: "What consistency model does your chosen database use? What happens if two nodes disagree on a user's balance?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "For payments I'd choose <strong>CP</strong> — PostgreSQL with synchronous replication. The business cannot tolerate inconsistency: two nodes disagreeing on a balance could allow double-spending or overdrafts. I'd accept that during a partition, payment writes fail gracefully rather than risk inconsistent state. In the UX this means a clear 'payment temporarily unavailable' message — far better than charging someone twice. For read-heavy non-critical paths like transaction history display, I'd use a read replica with slightly relaxed consistency since historical records don't need real-time accuracy."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "PostgreSQL uses <strong>linearisability</strong> — writes don't succeed until confirmed by the replica, and reads always reflect the latest committed write. If two nodes disagree on a balance, the primary refuses writes rather than risk divergence. Beyond CAP, I'd also use <code>SELECT FOR UPDATE</code> or advisory locks for balance updates — CAP handles inter-node consistency, but you still need application-level locking to serialise concurrent requests hitting the same node."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q3 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"MongoDB is often called 'CP' — do you agree?"</div>
+          <div class="playbook-q-probe">Follow-up: "What write concern and read concern would you need to set for true CP behaviour? What's the latency cost?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Not by default — MongoDB is <strong>AP out of the box</strong>. With default write concern <code>w:1</code>, the primary acknowledges a write before replication completes. If the primary fails immediately after, that write is lost on the replica. Reads with <code>readConcern: 'local'</code> can return data not yet replicated to majority. So in default configuration, MongoDB sacrifices consistency for availability. It <em>can</em> behave as CP — but you have to explicitly configure it."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "You need <code>w: 'majority'</code> — the write only succeeds when a majority of replica set members confirm it — combined with <code>readConcern: 'majority'</code> so reads only return data acknowledged by the majority. The latency cost: every write now waits for a network round-trip to replica confirmation. Same datacenter: ~1–5ms extra. Cross-region: 50–200ms. You also lose some write throughput since the primary must coordinate synchronously. This is why most teams run MongoDB in AP mode and reach for PostgreSQL when they genuinely need CP guarantees."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch for</span>
+    Many candidates say "I'd choose CP for everything important" without explaining the cost. Strong answer: "strong consistency requires synchronous replication, which adds write latency and means writes fail during a partition rather than accepting stale state — the right choice depends on what the business can tolerate."
+  </div>
+
+  <!-- Quiz -->
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <!-- Primary source -->
+  <hr>
+  <h2>Primary Source</h2>
+  <p>
+    <strong><a href="https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/" target="_blank">CAP Twelve Years Later: How the Rules Have Changed — Eric Brewer (InfoQ, 2012)</a></strong><br>
+    Written by the author of CAP theorem. Corrects common misconceptions and introduces nuance around partition handling. Read this — it's 15 minutes and will make your answers significantly more precise.
+  </p>
+  <p>
+    <strong><a href="https://dataintensive.net/" target="_blank">Designing Data-Intensive Applications — Ch. 9 (Kleppmann)</a></strong><br>
+    The canonical deep-dive on consistency and consensus. Ch. 9 covers linearisability, causality, and consensus in detail. Reference for any future distributed systems lesson.
+  </p>
+
+  <!-- Navigation -->
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Next:</strong> <em>Lesson 02 — coming soon</em> &nbsp;|&nbsp;
+    <a href="../reference/">Reference documents</a>
+  </div>
+
+  <!-- Ask teacher -->
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Confused about why PostgreSQL is CP but MongoDB needs special config? Not sure how to answer the MongoDB gotcha question? Wondering how PACELC applies to your applyGOAT architecture specifically?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 01 &nbsp;·&nbsp; CAP Theorem &amp; Consistency Models &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<!-- Playbook accordion -->
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  // Open this one if it was closed
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<!-- Quiz data -->
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "During a network partition, which two behaviors can a CP system exhibit?",
+    options: [
+      "Return stale data and stay available",
+      "Return an error and refuse stale reads",
+      "Buffer writes and replay them later",
+      "Switch to eventual consistency automatically"
+    ],
+    answer: 1,
+    explanation: "CP systems prioritise consistency — they refuse to return data they can't guarantee is current. You get an error or timeout, not stale data. PostgreSQL does exactly this."
+  },
+  {
+    q: "By default, MongoDB's write concern is w:1. What does this mean for CAP behaviour?",
+    options: [
+      "MongoDB is CP — writes are synchronously replicated",
+      "MongoDB is AP — writes are acknowledged before replication completes",
+      "MongoDB is CA — it doesn't tolerate partitions",
+      "MongoDB is linearisable — reads always return latest write"
+    ],
+    answer: 1,
+    explanation: "w:1 means the primary acknowledges the write before replicas confirm it. If the primary fails immediately after, that write may be lost. This is AP behaviour. You need w:'majority' + readConcern:'majority' for CP."
+  },
+  {
+    q: "Why is Pinecone classified as AP rather than CP?",
+    options: [
+      "It doesn't support replication at all",
+      "Vector search is approximate so consistency doesn't apply",
+      "Upserted vectors become queryable with a delay — reads may return stale index state",
+      "Pinecone runs on a single node so partitions can't occur"
+    ],
+    answer: 2,
+    explanation: "Pinecone uses eventual consistency — after an upsert, the new vector is queryable within seconds, not instantly. The system stays available (AP) during partitions rather than blocking reads until consistency is guaranteed."
+  },
+  {
+    q: "What does PACELC add to CAP that CAP doesn't cover?",
+    options: [
+      "It adds a fourth property: durability",
+      "It describes the latency vs consistency trade-off during normal (non-partition) operation",
+      "It replaces partition tolerance with network reliability",
+      "It separates read consistency from write consistency"
+    ],
+    answer: 1,
+    explanation: "CAP only describes behaviour *during a partition*. PACELC also characterises the trade-off in normal operation: even without a partition, you must choose between lower latency (serve fast, accept slight inconsistency) or stronger consistency (slower, synchronous reads)."
+  },
+  {
+    q: "In applyGOAT, a user upgrades their subscription. Which consistency model is most appropriate for reading their updated plan immediately after?",
+    options: [
+      "Eventual consistency — fast reads are fine for billing state",
+      "Causal consistency — ensure their own write is seen by their next read",
+      "Linearisability — every node must agree on the updated plan before reads proceed",
+      "Sequential consistency — all users see subscription updates in the same order"
+    ],
+    answer: 2,
+    explanation: "Billing and subscription state must be linearisable — if a user just paid, they must see premium features immediately, on any node. Serving stale 'free plan' data after a successful payment is a business-critical bug. This is why you'd use PostgreSQL (not Pinecone) for subscription state."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA);
+</script>
+</body>
+</html>
