@@ -571,6 +571,48 @@ Result: 1 DB query fired. Not 1000.</pre>
 
   <p><strong>The trade-off:</strong> Reads are fast and predictable — one key lives in exactly one place. Writes require seeking to that place on disk, which is the slower part.</p>
 
+  <div class="callout">
+    <span class="callout-label">How page splitting actually works</span>
+
+    <p style="margin-bottom:0.75rem">Every leaf page has a fixed capacity — say it holds a maximum of 4 keys. When you insert a 5th, there's no room. The page has to split.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>Before the insert</strong> — leaf page is full:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Parent page:
+  [ pointer | 30 | pointer ]
+       ↓                ↓
+  [10, 20, 30, 40]    [50, 60, 70, 80]   ← both are leaf pages
+  (THIS ONE IS FULL)</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Insert key 25</strong> — no room on the left leaf. Split it:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Step 1 — Split the full leaf in half:
+  Left half:  [10, 20]
+  Right half: [25, 30, 40]   ← new key lands here
+
+Step 2 — Promote the middle key (25) up to the parent:
+  Parent now needs to hold a new pointer to the right half.
+
+Step 3 — Parent page after the split:
+  [ pointer | 25 | pointer | 30 | pointer ]
+       ↓          ↓              ↓
+  [10, 20]    [25, 30, 40]    [50, 60, 70, 80]</div>
+
+    <p style="margin-bottom:0.75rem"><strong>What if the parent page is also full?</strong> The same thing happens — the parent splits, and the middle key gets promoted one level higher. This can cascade all the way up.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>Root split — the tree grows taller:</strong></p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Root is full and needs to split:
+
+Step 1 — Create a new root (empty)
+Step 2 — Old root splits into two pages
+Step 3 — New root holds the single promoted middle key
+
+Before:                   After:
+  [10|20|30|40]             [25]           ← new root, 1 level taller
+                           /    \
+                       [10,20]  [30,40]</div>
+
+    <p style="margin-bottom:0">This is why B-Trees are always balanced — every split promotes a key upward by exactly one level. The tree only grows taller at the root, never sideways. In practice, a well-tuned PostgreSQL B-Tree is 3–4 levels deep even for tables with hundreds of millions of rows.</p>
+  </div>
+
   <h3>LSM Tree — Log-Structured Merge Tree (Cassandra, RocksDB, ScyllaDB)</h3>
 
   <p>Imagine instead of updating the filing cabinet every time something changes, you just write new notes on a scratchpad on your desk. Later, when the scratchpad fills up, you file everything away neatly. Background workers periodically clean up duplicates.</p>
@@ -605,6 +647,50 @@ Result: 1 DB query fired. Not 1000.</pre>
   <p><strong>The catch — reads are harder:</strong> A key might be in the MemTable. Or in one of several SSTable files on disk. A read has to check all of them, newest first.</p>
 
   <p><em>The fix:</em> <strong>Bloom filters.</strong> Each SSTable has a tiny companion filter that can answer one question fast: "is this key definitely NOT in this file?" If yes — skip the file entirely. False positive rate is ~1% (it'll occasionally say "maybe" when the key isn't there, but never "no" when it is). Most files get skipped without opening.</p>
+
+  <div class="callout">
+    <span class="callout-label">How a Bloom filter actually works</span>
+
+    <p style="margin-bottom:0.75rem">A Bloom filter is just a <strong>row of bits</strong> (all starting at 0) and a few hash functions.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>Adding a key ("user:42") to the filter:</strong></p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Bit array (10 slots, all 0 to start):
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ]
+    0  1  2  3  4  5  6  7  8  9
+
+Run "user:42" through 3 hash functions:
+  hash1("user:42") → position 2
+  hash2("user:42") → position 5
+  hash3("user:42") → position 8
+
+Flip those bits to 1:
+  [ 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 ]
+             ↑        ↑        ↑</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Checking if "user:99" is in this SSTable:</strong></p>
+    <div class="arch-diagram" style="margin-bottom:1rem">hash1("user:99") → position 2  → bit is 1 ✓
+hash2("user:99") → position 5  → bit is 1 ✓
+hash3("user:99") → position 7  → bit is 0 ✗  ← STOP
+
+One bit is 0 → "user:99" is DEFINITELY NOT in this file.
+Skip it. No disk read needed.</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Why false positives happen (but false negatives can't):</strong></p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Suppose other keys have already flipped bits 3, 6, and 9.
+Now check "user:77":
+  hash1("user:77") → position 3  → bit is 1 (set by another key)
+  hash2("user:77") → position 6  → bit is 1 (set by another key)
+  hash3("user:77") → position 9  → bit is 1 (set by another key)
+
+All bits are 1 → filter says "MAYBE in this file"
+→ open the SSTable and check properly
+→ turns out "user:77" isn't there. False positive.
+
+False negatives are impossible: once a key's bits are set to 1,
+they never go back to 0. If the key was added, all its bits are 1.</div>
+
+    <p style="margin-bottom:0">The filter itself is tiny — ~10 bits per key. For an SSTable holding 1 million keys, the Bloom filter is ~1.2 MB kept in RAM. That's the entire "is this key in here?" index fitting in memory, avoiding disk reads for the vast majority of lookups.</p>
+  </div>
 
   <h3>The three LSM trade-offs</h3>
 
@@ -677,66 +763,237 @@ Result: 1 DB query fired. Not 1000.</pre>
   <p><strong>Pro:</strong> Range scans are efficient — all records between two timestamps live on one shard.<br>
   <strong>Classic trap:</strong> Monotonically increasing keys (auto-increment IDs, timestamps) mean every new write lands on the <em>last</em> shard. Hot spot while all others sit idle.</p>
 
+  <div class="callout">
+    <span class="callout-label">Range sharding explained simply</span>
+
+    <p style="margin-bottom:0.75rem">Imagine you have 3 filing clerks and you split the work alphabetically:</p>
+
+    <div class="arch-diagram" style="margin-bottom:1rem">Shard A → user IDs 1       to 1,000,000
+Shard B → user IDs 1,000,001 to 2,000,000
+Shard C → user IDs 2,000,001 to 3,000,000</div>
+
+    <p style="margin-bottom:0.75rem">If you want all users between ID 500,000 and 600,000, they're all on Shard A — one fast scan, no jumping between servers. That's the win.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>The hot spot problem:</strong> your app uses auto-increment IDs. User 1 gets ID 1, user 2 gets ID 2, and so on. Where do all new writes go?</p>
+
+    <div class="arch-diagram" style="margin-bottom:1rem">Day 1:  new users get IDs 1–1,000,000        → all writes hit Shard A
+Day 2:  new users get IDs 1,000,001–2,000,000  → all writes hit Shard B
+Day 3:  new users get IDs 2,000,001–3,000,000  → all writes hit Shard C
+
+Right now (today), every single new write goes to Shard C.
+Shard A and Shard B are just sitting there doing almost nothing.</div>
+
+    <p style="margin-bottom:0.75rem">You bought three servers to share the load. But at any given moment, only one server is doing all the work — the one holding the highest ID range. The other two are idle. You've paid for three but only using one.</p>
+
+    <p style="margin-bottom:0.5rem">The same problem hits timestamps. If you shard by <code>created_at</code>:</p>
+
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Shard A → Jan–Apr   (old data, rarely written to)
+Shard B → May–Aug   (old data, rarely written to)
+Shard C → Sep–now   (every new record lands here)
+
+100% of writes go to Shard C. Always. Forever.</div>
+
+    <p style="margin-bottom:0">This is why auto-increment primary keys and timestamp-based range sharding are a dangerous combination. The fix is either hash sharding (distributes writes randomly) or a key that doesn't always go up — like Instagram's ID scheme, which mixes in a shard ID so writes spread across all shards from day one.</p>
+  </div>
+
   <h3>Hash sharding</h3>
-  <p><code>shard = hash(key) mod N</code>. Even distribution, no hot tail.</p>
-  <p><strong>The mod-N problem:</strong> Add one shard — N becomes N+1 — and almost every key maps to a different shard. You have to move nearly the entire dataset to rebalance.</p>
+  <p>Instead of assigning ranges, you run the key through a hash function and use the result to decide which shard it belongs to: <code>shard = hash(key) mod N</code>. The hash function spreads keys randomly and evenly — no hot tail.</p>
+
+  <div class="callout">
+    <span class="callout-label">Hash sharding — how it works</span>
+    <p style="margin-bottom:0.75rem">You have 3 shards (N = 3). Every key gets hashed to a number, then you take the remainder when divided by 3:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">hash("user:100") = 9021  →  9021 mod 3 = 0  →  Shard 0
+hash("user:101") = 4517  →  4517 mod 3 = 2  →  Shard 2
+hash("user:102") = 7830  →  7830 mod 3 = 0  →  Shard 0
+hash("user:103") = 3312  →  3312 mod 3 = 1  →  Shard 1
+hash("user:104") = 6609  →  6609 mod 3 = 0  →  Shard 0</div>
+    <p style="margin-bottom:0">Writes spread across all 3 shards regardless of whether the ID is old or new. No hot tail. Range sharding's fatal flaw is gone.</p>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">The mod-N problem — why adding a shard is painful</span>
+    <p style="margin-bottom:0.75rem">You add a 4th shard. N changes from 3 to 4. Now recalculate every key:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">BEFORE (N=3):
+  hash("user:100") = 9021  →  9021 mod 3 = 0  →  Shard 0  ✓
+  hash("user:101") = 4517  →  4517 mod 3 = 2  →  Shard 2  ✓
+  hash("user:102") = 7830  →  7830 mod 3 = 0  →  Shard 0  ✓
+
+AFTER (N=4):
+  hash("user:100") = 9021  →  9021 mod 4 = 1  →  Shard 1  ← moved!
+  hash("user:101") = 4517  →  4517 mod 4 = 1  →  Shard 1  ← moved!
+  hash("user:102") = 7830  →  7830 mod 4 = 2  →  Shard 2  ← moved!</div>
+    <p style="margin-bottom:0">Nearly every key now maps to a different shard. To make this work you'd have to physically move almost your entire dataset to new servers. At millions of rows, that's hours of downtime and data migration. This is why mod N alone doesn't work in production.</p>
+  </div>
 
   <h3>Consistent hashing — the solution</h3>
-  <p>Proposed by Karger et al. (1997). Made famous by Amazon Dynamo.</p>
-  <ol>
-    <li>Map both keys and nodes onto a virtual ring using the same hash function.</li>
-    <li>A key is owned by the nearest node clockwise on the ring.</li>
-    <li>Add a node: it takes over only the keys between itself and its predecessor.</li>
-    <li>Remove a node: its keys transfer to the successor.</li>
-    <li><strong>Only ~1/N keys move</strong> during any node add/remove. Everything else stays put.</li>
-  </ol>
+  <p>Proposed by Karger et al. (1997). Made famous by Amazon Dynamo. The insight: instead of mapping keys to shards directly, map both keys <em>and</em> shards onto the same circular number line (a "ring"). Then the rule is simple — a key belongs to the nearest shard clockwise from it on the ring.</p>
 
-  <div class="arch-diagram">Ring (hash space 0 → 2^32):
+  <div class="callout">
+    <span class="callout-label">The ring — step by step</span>
+    <p style="margin-bottom:0.75rem">Imagine a clock face. Instead of 12 hours, it goes from 0 to 2³² (about 4 billion positions). Hash functions place both nodes and keys somewhere on this clock.</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">The ring (simplified — imagine this as a circle wrapping around):
 
-  Node A (pos 0)  →  Node B (pos 100)  →  Node C (pos 200)  →  [back to A]
+  0 ─────── A(pos 0) ─────── B(pos 100) ─────── C(pos 200) ─────── 0
+                                                                    ↑
+                                                              (wraps back to A)
 
-  key "user:123" hashes to pos 85 → owned by Node B (nearest clockwise)
-  key "user:456" hashes to pos 210 → owned by Node A (wraps around)
+  key "user:123" hashes to position 85
+    → go clockwise from 85 → first node you hit is B (at 100)
+    → "user:123" belongs to Shard B
 
-  Add Node D at pos 150:
-    → Only keys 100..150 (previously owned by C) move to D
-    → Everything else: untouched</div>
+  key "user:456" hashes to position 210
+    → go clockwise from 210 → wraps around the ring → first node is A (at 0)
+    → "user:456" belongs to Shard A</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Now add Node D at position 150:</strong></p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Before:  A(0) ── B(100) ── C(200) ── [back to A]
+After:   A(0) ── B(100) ── D(150) ── C(200) ── [back to A]
+
+Who is affected?
+  Keys between position 100 and 150 — they used to walk clockwise to C,
+  now they walk clockwise and hit D first.
+
+  → Only keys in range 100–150 move to D.
+  → Everything else: completely untouched.
+
+With mod N: adding 1 shard moves ~all keys.
+With consistent hashing: adding 1 shard moves ~1/N keys.</div>
+    <p style="margin-bottom:0">That's the entire trick. The ring means that adding or removing a node only disturbs its immediate neighbours, not the whole dataset.</p>
+  </div>
 
   <h3>Virtual nodes (vnodes) — Cassandra's refinement</h3>
-  <p>Instead of placing each physical machine at one point on the ring, assign each node <strong>multiple virtual positions</strong> (Cassandra historically used 256 vnodes per physical node). This:</p>
-  <ul>
-    <li>Smooths distribution when hardware is heterogeneous</li>
-    <li>Makes adding/removing a node a gradual, parallel operation — load transfers from many small ranges instead of one big one</li>
-  </ul>
+  <p>With one position per physical machine, distribution can be uneven by chance — one node might end up owning a large arc of the ring, another a tiny one. Cassandra's fix: give each physical machine <strong>256 positions</strong> on the ring (virtual nodes) instead of one.</p>
+
+  <div class="callout">
+    <span class="callout-label">Why vnodes help</span>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Without vnodes (1 position each):
+  Ring: ── A ──────────────────── B ── C ──── [back to A]
+  Node A owns a huge arc. Node C owns a tiny one. Uneven.
+
+With vnodes (each node gets many positions):
+  Ring: ── A ── C ── B ── A ── C ── A ── B ── C ── B ── [back...]
+  Each node's positions are scattered around the ring.
+  Every node ends up owning roughly equal total arc length.</div>
+    <p style="margin-bottom:0">Adding a new machine is also smoother — instead of stealing one big chunk from one neighbour, it picks up many small pieces from many neighbours in parallel. Less disruption, faster rebalance.</p>
+  </div>
 
   <h3>Hot spots — the celebrity problem</h3>
-  <p>Consistent hashing distributes keys evenly across normal load. But a celebrity posts something: millions of requests now hammer the <em>single shard</em> holding that user's key. The shard's throughput limit doesn't care about your hashing strategy.</p>
-  <p><strong>Mitigations:</strong></p>
-  <ul>
-    <li>Append a small random suffix to hot keys: <code>user:123_0</code> through <code>user:123_9</code>. Spread reads across 10 shards. Aggregate on read.</li>
-    <li>Cache the hot entity aggressively in Redis with a very short TTL.</li>
-    <li>Give it a dedicated fast path — separate read replicas for top-N hot entities.</li>
-  </ul>
+  <p>Consistent hashing distributes keys evenly on average. But hashing strategy doesn't help when one specific key gets hammered by millions of requests. A celebrity posts something — millions of reads all go to the one shard holding <code>user:celebrity_id</code>. That shard has a throughput ceiling just like any other machine.</p>
+
+  <div class="callout">
+    <span class="callout-label">The three fixes</span>
+    <p style="margin-bottom:0.5rem"><strong>1. Key splitting with a random suffix.</strong> Instead of one key for the celebrity, create 10:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Normal:   read "user:123"         → 1M requests → 1 shard overwhelmed
+
+Splitting: reads randomly pick one of:
+  "user:123_0", "user:123_1", ... "user:123_9"
+  Each hashes to a different shard → load spread across 10 shards
+
+On write: write to all 10.  On read: pick one randomly.</div>
+    <p style="margin-bottom:0.5rem"><strong>2. Cache it.</strong> Put the celebrity's data in Redis with a very short TTL (seconds). Most reads never reach the database shard at all.</p>
+    <p style="margin-bottom:0"><strong>3. Dedicated replicas.</strong> Detect the top-N hot entities and give them their own read replica pool. Normal traffic uses the regular shards; hot entities use the fast path.</p>
+  </div>
 
   <h3>Instagram's 64-bit ID scheme — sharding done right</h3>
-  <p>Instagram needed unique IDs that were time-sortable, generated at high throughput, and required no central ID service. Their solution: a 64-bit integer with three packed fields, generated inside a PostgreSQL stored procedure.</p>
+  <p>Instagram had a specific problem: they needed unique IDs for millions of photos, but a central ID counter (one database that hands out the next number) is a single point of failure and a write bottleneck. Their solution: encode enough information inside the ID itself so each shard can generate its own IDs independently, with no coordination.</p>
 
-  <div class="arch-diagram">64-bit ID structure:
+  <div class="arch-diagram">[ 41 bits: timestamp ][ 13 bits: shard ID ][ 10 bits: sequence ]
 
-  [ 41 bits: millisecond timestamp ][ 13 bits: shard ID ][ 10 bits: sequence ]
+  Example — a photo uploaded on Shard 7, at exactly 10:00:00.123am, 5th photo that millisecond:
 
-  → 41 bits: time-sortable, ~69 years of headroom from epoch
-  → 13 bits: up to 8,192 logical shards (each a PostgreSQL schema)
-  → 10 bits: 1,024 IDs per millisecond per shard
+  [ 1,234,567,890,123 ][ 7 ][ 5 ]   → one unique 64-bit integer, forever</div>
 
-  No external service. IDs sort chronologically. Range queries are natural.
-  Instagram: 30M+ users, ~12 engineers.</div>
+  <div class="callout">
+    <span class="callout-label">What's actually in the timestamp field — and how does 41 bits = 69 years?</span>
+
+    <p style="margin-bottom:0.75rem">The timestamp field doesn't store "2011-01-01" as text. It stores a plain integer: <strong>milliseconds elapsed since a fixed starting point</strong> (Instagram's custom epoch — the date they decided to start counting from, roughly when they launched).</p>
+
+    <p style="margin-bottom:0.5rem">So the number in the timestamp field might look like this:</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Instagram epoch starts: 2011-01-01 00:00:00 UTC  (they picked this date)
+
+Photo uploaded:        2014-03-15 10:00:00.123 UTC
+
+Milliseconds elapsed since epoch:
+  From 2011-01-01 to 2014-03-15 = ~1,170 days
+  1,170 days × 24h × 60m × 60s × 1000ms = ~101,088,000,000 ms
+
+So the timestamp field contains: 101,088,000,123
+That's just a number. But it converts back to the exact real date.</div>
+
+    <p style="margin-bottom:0.75rem">You can decode any Instagram ID back to the exact millisecond it was created. The ID <em>is</em> the timestamp — it's just packed as an integer instead of a formatted date string.</p>
+
+    <p style="margin-bottom:0.5rem"><strong>Why 41 bits = ~69 years:</strong></p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">41 bits can hold a maximum value of 2^41 = 2,199,023,255,551
+
+That's the largest millisecond count that fits in 41 bits.
+
+Convert it to years:
+  2,199,023,255,551 ms
+  ÷ 1,000         = 2,199,023,255  seconds
+  ÷ 60            = 36,650,387     minutes
+  ÷ 60            = 610,839        hours
+  ÷ 24            = 25,451         days
+  ÷ 365           = ~69.7 years
+
+So starting from 2011: the IDs won't overflow until around 2080.
+After that the counter wraps back to 0 — same problem as Y2K, just for IDs.</div>
+
+    <p style="margin-bottom:0">The 69-year headroom isn't magic — it's just arithmetic. 41 bits fits ~2.2 trillion milliseconds, and ~2.2 trillion milliseconds happens to be ~69 years. Instagram could have used 42 bits (138 years) but that would leave 1 fewer bit elsewhere.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">The sequence field — what happens if two photos arrive in the same millisecond?</span>
+    <p style="margin-bottom:0.75rem">If two photos land on the same shard in the same millisecond, the timestamp alone isn't enough to tell them apart — they'd produce the same ID. The sequence field solves this:</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">10:00:00.123ms — Photo A arrives on Shard 7 → sequence = 0 → ID ends in ...7, 0
+10:00:00.123ms — Photo B arrives on Shard 7 → sequence = 1 → ID ends in ...7, 1
+10:00:00.123ms — Photo C arrives on Shard 7 → sequence = 2 → ID ends in ...7, 2
+
+Same millisecond, same shard — still unique because the sequence ticks up.
+10 bits = 1,024 slots per millisecond per shard. Resets to 0 each new millisecond.</div>
+    <p style="margin-bottom:0">Between the three fields: one ID per millisecond × 1,024 sequences × 8,192 shards = over 8 billion unique IDs per second across the whole system. No coordination needed between shards.</p>
+  </div>
 
   <h3>Vitess — sharding as middleware</h3>
-  <p>YouTube's MySQL was approaching the write throughput limit of a single machine. Rather than rewrite every query to be shard-aware, they built <strong>Vitess</strong>: a middleware layer that speaks MySQL protocol, pools connections, rewrites queries transparently, and handles resharding by splitting ranges automatically. Applications see one database. Vitess is now a CNCF graduated project — Slack adopted it to scale their entire MySQL fleet. PlanetScale is built on top of it.</p>
+  <p>The problem with sharding: every query in your app now needs to know which shard to talk to. That means rewriting thousands of SQL queries. YouTube faced this and built <strong>Vitess</strong> instead — a layer that sits in front of MySQL and handles all the shard routing invisibly.</p>
+
+  <div class="callout">
+    <span class="callout-label">What Vitess actually does</span>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Without Vitess:
+  App code → "which shard is user 42 on?" → calculate → connect to Shard B → query
+
+With Vitess:
+  App code → plain SQL: "SELECT * FROM users WHERE id = 42"
+      ↓
+  Vitess (looks like a single MySQL to the app)
+      → figures out the shard internally
+      → rewrites and routes the query
+      → returns the result
+  App never knows there are multiple shards.</div>
+    <p style="margin-bottom:0">Vitess also handles connection pooling, query rewriting for cross-shard operations, and automatic resharding. It's now a CNCF graduated project. Slack uses it to scale their entire MySQL fleet. PlanetScale (the hosted MySQL service) is built on top of it.</p>
+  </div>
 
   <h3>Cross-shard queries and distributed transactions</h3>
-  <p>A query that touches one shard is cheap. A query that crosses shards becomes <strong>scatter-gather</strong>: fan out to every relevant shard, collect results, merge in the application layer. And distributed transactions (atomically update rows on two different shards) lose the single-node ACID guarantees you relied on. This is the cost of sharding.</p>
+  <p>Everything above assumes queries hit one shard. When a query needs data from multiple shards, the cost jumps dramatically.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Scatter-gather — what happens when a query crosses shards</span>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Single-shard query (cheap):
+  "Get user 42's profile"
+  → hash("user:42") → Shard B → one query → return result
+
+Cross-shard query (expensive):
+  "Get all users who signed up this week"
+  → no single shard has all users
+  → send the query to ALL shards simultaneously (fan out)
+  → wait for all shards to respond
+  → collect and merge results in the application layer (gather)
+  → return combined result
+
+If you have 100 shards: 100 parallel queries, 100 responses to merge.
+Latency = slowest shard. One slow shard stalls the whole response.</div>
+    <p style="margin-bottom:0.75rem"><strong>Distributed transactions are even harder.</strong> Say you want to move money from user A (Shard 1) to user B (Shard 3) — atomically, so it either fully happens or doesn't happen at all. On a single database this is one transaction. Across shards, there's no single transaction manager. You either implement a complex two-phase commit protocol, or you accept that some cross-shard operations aren't truly atomic.</p>
+    <p style="margin-bottom:0">This is the real cost of sharding — not the infrastructure, but the loss of the simple guarantees you had with one database.</p>
+  </div>
 
   <div class="callout warning">
     <span class="callout-label">Rule of thumb</span>

@@ -88,85 +88,321 @@
   </div>
 
   <div class="callout">
+    <span class="callout-label">One query through all four stages</span>
+
+    <p style="margin-bottom:0.75rem">Take this query against an applyGOAT-style database:</p>
+
+    <pre style="margin-bottom:1.25rem">SELECT u.name, r.score
+FROM   users u
+JOIN   resumes r ON r.user_id = u.id
+WHERE  u.created_at > '2024-01-01'
+ORDER  BY r.score DESC
+LIMIT  10;</pre>
+
+    <p style="margin-bottom:0.5rem"><strong>Stage 1 — Parse</strong></p>
+    <div class="arch-diagram" style="margin-bottom:1rem">Input: a raw string of text.
+
+Tokeniser breaks it into pieces:
+  SELECT / u.name / , / r.score / FROM / users / u / JOIN / resumes ...
+
+Syntax check: is the grammar valid?
+  → Yes. Produces a parse tree (an internal tree structure).
+
+What fails here: "SELCT" instead of "SELECT", a missing comma, an unclosed bracket.
+What does NOT fail here: whether "users" actually exists — that's stage 2's job.</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Stage 2 — Analyse / Rewrite</strong></p>
+    <div class="arch-diagram" style="margin-bottom:1rem">PostgreSQL opens the system catalog (its internal dictionary of all tables and columns).
+
+Checks every name in the parse tree:
+  → Does table "users" exist?              ✓
+  → Does table "resumes" exist?            ✓
+  → Does "users" have a column "name"?     ✓
+  → Does "resumes" have a column "score"?  ✓
+  → Is "u.created_at" a date type?         ✓  (comparison with '2024-01-01' is valid)
+
+If any check fails → error: "column u.typo does not exist"
+
+If a view was referenced (e.g. FROM active_users):
+  → Silently rewritten to its underlying SELECT right here.
+  → The planner never sees the view name — only the real tables.
+
+Output: a query tree with all names resolved to internal object IDs.</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Stage 3 — Plan</strong></p>
+    <div class="arch-diagram" style="margin-bottom:1rem">The planner looks at the resolved query tree and asks:
+"What is the cheapest sequence of operations to produce this result?"
+
+It considers multiple options — e.g.:
+  Option A: Seq scan users → Seq scan resumes → Hash join → Sort → Limit
+  Option B: Index scan users (created_at) → Nested loop join resumes → Sort → Limit
+  Option C: Seq scan resumes → Index scan users (PK) → Merge join → Sort → Limit
+
+For each option it estimates the cost using table statistics:
+  "users has 500,000 rows. created_at > 2024-01-01 matches ~12% → ~60,000 rows."
+  "resumes has 480,000 rows, indexed on user_id."
+  "A nested loop on 60,000 rows with an index lookup is cheaper than a hash join here."
+
+Picks the plan with the lowest estimated cost. Example winner:
+  Index scan on users.created_at → Nested loop join resumes → Sort → Limit 10
+
+Output: one execution plan — a tree of nodes handed to the executor.</div>
+
+    <p style="margin-bottom:0.5rem"><strong>Stage 4 — Execute</strong></p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">The executor walks the plan tree bottom-up, pulling one row at a time through each node:
+
+  [Limit 10]                    ← stops as soon as 10 rows have passed through
+       ↑
+  [Sort: r.score DESC]          ← collects all rows, sorts them, passes them up
+       ↑
+  [Nested Loop Join]            ← for each user row, fetches the matching resume
+       ↑                ↑
+  [Index Scan:      [Index Scan:
+   users WHERE       resumes WHERE
+   created_at >      user_id = ?]
+   '2024-01-01']
+
+Each node only does one thing: asks its child "give me the next row",
+processes it, and passes it upward. This is the Volcano / Iterator model.
+Rows flow up through the pipeline until 10 reach the Limit node — done.
+
+Client receives 10 rows.</div>
+
+    <p style="margin-bottom:0">Total time = planning (microseconds, usually invisible) + execution (where slow queries actually lose time). The execution speed is determined entirely by what the planner chose in stage 3 — which is why understanding the plan is the first step in fixing a slow query.</p>
+  </div>
+
+  <div class="callout">
     <span class="callout-label">The key insight</span>
     You can't influence parsing or execution — those are fixed. Everything that matters for performance happens in the <strong>Plan</strong> step. Your indexes, table statistics, query shape, and join order all feed the planner's decision. When a query is slow, the question is always: "What did the planner choose and why?"
   </div>
 
 
   <h2>How the Planner Estimates Costs</h2>
-  <p>The planner doesn't run the query to find the fastest plan. It uses statistics stored in <code>pg_statistic</code> (exposed via <code>pg_stats</code>) to estimate the cost of each plan without executing it.</p>
+  <p>The planner's job is to find the cheapest way to execute your query — but it can't actually run the query to test each option. Instead it uses a set of pre-collected statistics about your data to <em>estimate</em> how expensive each plan would be.</p>
 
-  <h3>Key statistics the planner uses</h3>
-  <table>
-    <thead>
-      <tr><th>Statistic</th><th>What it tells the planner</th><th>Source</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><code>n_distinct</code></td>
-        <td>Number of unique values in a column. Low = low selectivity (e.g. boolean). High = highly selective (e.g. user_id).</td>
-        <td><code>pg_stats.n_distinct</code></td>
-      </tr>
-      <tr>
-        <td><code>most_common_vals</code></td>
-        <td>Most frequent values and their frequencies. Used to estimate how many rows a WHERE filter will return.</td>
-        <td><code>pg_stats.most_common_vals</code></td>
-      </tr>
-      <tr>
-        <td><code>histogram_bounds</code></td>
-        <td>Distribution of values across ranges. Used for range query selectivity estimation.</td>
-        <td><code>pg_stats.histogram_bounds</code></td>
-      </tr>
-      <tr>
-        <td><code>reltuples</code></td>
-        <td>Estimated number of rows in the table.</td>
-        <td><code>pg_class.reltuples</code></td>
-      </tr>
-      <tr>
-        <td><code>relpages</code></td>
-        <td>Number of disk pages the table occupies. Drives sequential scan cost.</td>
-        <td><code>pg_class.relpages</code></td>
-      </tr>
-    </tbody>
-  </table>
+  <p>Think of it like a chef estimating how long dinner will take before cooking it. They don't cook every dish to find out — they use what they already know: how many guests, what ingredients are in the fridge, which oven is free. The planner does the same with your tables.</p>
 
-  <p>Statistics are collected by the <strong>ANALYZE</strong> command (runs automatically via autovacuum). Stale statistics cause the planner to make wrong choices — often choosing a sequential scan over an index scan because it underestimates how many rows the filter will eliminate.</p>
+  <h3>What statistics the planner keeps — and why each one matters</h3>
 
-  <pre><code>-- Manually refresh statistics on a table after large bulk loads
-ANALYZE applications;
+  <div class="callout">
+    <span class="callout-label">n_distinct — how many unique values does this column have?</span>
+    <p style="margin-bottom:0.75rem">This tells the planner how selective a filter on this column will be.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Column: applications.status
+Values: 'pending', 'reviewed', 'rejected', 'hired'
+n_distinct = 4
 
--- View the statistics for a specific column
-SELECT * FROM pg_stats WHERE tablename = 'applications' AND attname = 'status';</code></pre>
+Query: WHERE status = 'hired'
+Planner thinks: "4 unique values, roughly 1-in-4 rows match → ~25% of the table"
+→ That's a lot of rows. Index probably not worth it. Seq scan.
 
+Column: applications.user_id
+n_distinct = 500,000  (every user has a unique ID)
 
-  <h2>Scan Strategies</h2>
-  <p>The planner's first decision per table: how to access the rows. Three main strategies.</p>
-
-  <div class="scan-grid">
-    <div class="scan-card">
-      <div class="scan-name">Sequential Scan</div>
-      Reads every page in the table from start to finish. Best when fetching a large fraction of the table (no index would help). I/O is sequential — fast on SSDs.
-      <div class="scan-when">Chosen when: no useful index, or filter returns &gt;~5–20% of rows.</div>
-    </div>
-    <div class="scan-card">
-      <div class="scan-name">Index Scan</div>
-      Walks the B-tree index to find matching rows, then fetches each row from the heap (the actual table). Each row lookup is a random I/O.
-      <div class="scan-when">Chosen when: highly selective filter, small fraction of rows returned.</div>
-    </div>
-    <div class="scan-card">
-      <div class="scan-name">Bitmap Index Scan</div>
-      Two-pass: first, collects all heap page locations from the index into a bitmap. Second, reads those pages in physical order — converting random I/O into sequential. Used when the index is moderately selective (too many rows for an index scan, too few for a sequential scan).
-      <div class="scan-when">Chosen when: medium selectivity. Also used to combine multiple indexes (Bitmap AND/OR).</div>
-    </div>
+Query: WHERE user_id = 42
+Planner thinks: "500,000 unique values, roughly 1-in-500,000 rows match → tiny fraction"
+→ Very few rows. Index scan is worth it.</div>
+    <p style="margin-bottom:0">Low n_distinct = column is not very selective (status, country, boolean). High n_distinct = column is highly selective (user_id, email, UUID). This is how the planner decides whether an index is even worth using.</p>
   </div>
 
   <div class="callout">
-    <span class="callout-label">Index-only scan</span>
-    A fourth strategy: when all columns needed by a query are included in the index itself (a <strong>covering index</strong>), PostgreSQL never touches the heap at all. This is the fastest possible read — memory access to index pages only. More on this in Lesson 06.
+    <span class="callout-label">most_common_vals — what are the most frequent values, and how often do they appear?</span>
+    <p style="margin-bottom:0.75rem">Even within a column, some values appear far more than others. The planner stores the top N values and their frequencies so it can estimate <em>specific</em> filter results, not just averages.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Column: applications.status
+most_common_vals:  ['pending', 'rejected', 'reviewed', 'hired']
+most_common_freqs: [0.60,      0.25,       0.12,       0.03  ]
+
+Query: WHERE status = 'hired'
+Planner looks up 'hired' in most_common_vals → frequency = 0.03
+"3% of rows match" → still uses index, very selective.
+
+Query: WHERE status = 'pending'
+Planner looks up 'pending' → frequency = 0.60
+"60% of rows match" → don't bother with an index, seq scan is faster.</div>
+    <p style="margin-bottom:0">Without this, the planner would assume every value appears equally. That's wrong — and it leads to bad plan choices on skewed data.</p>
   </div>
 
-  <h3>Why a small table uses a sequential scan even with an index</h3>
-  <p>The planner compares costs. For a 100-row table, reading all 100 rows sequentially (maybe one page of I/O) is cheaper than walking the B-tree (multiple index page reads) + fetching heap rows. The index adds overhead. The planner knows this and chooses the sequential scan correctly.</p>
+  <div class="callout">
+    <span class="callout-label">histogram_bounds — how are values spread across a range?</span>
+    <p style="margin-bottom:0.75rem">For range queries (<code>&gt;</code>, <code>BETWEEN</code>, <code>&lt;</code>), the planner needs to know how values are distributed — not just the most common ones. It stores bucket boundaries so it can estimate what fraction of rows fall in any range.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Column: applications.created_at
+histogram_bounds: [2022-01-01, 2022-07-01, 2023-01-01, 2023-07-01, 2024-01-01]
+(these are the boundaries that divide the data into 4 equal-sized buckets)
+
+Query: WHERE created_at > '2023-07-01'
+Planner sees: that boundary is the start of the last bucket
+→ roughly 25% of rows match
+→ that's a big chunk — lean toward seq scan
+
+Query: WHERE created_at > '2023-12-15'
+Planner sees: that's near the very end of the last bucket
+→ roughly 2% of rows match
+→ very selective — use the index</div>
+    <p style="margin-bottom:0">Stale histogram bounds are a common source of bad plans after large bulk inserts. Run <code>ANALYZE</code> after loading a lot of new data.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">reltuples and relpages — how big is the table?</span>
+    <p style="margin-bottom:0.75rem">These two live on the table itself (not per-column). Together they tell the planner the raw size of the table:</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">reltuples = 500,000    ← estimated number of rows
+relpages  = 6,250      ← number of 8KB disk pages the table takes up
+
+Sequential scan cost = relpages × cost_per_page
+                     = 6,250 × 1.0  =  6,250 cost units
+
+Index scan cost = (index pages walked) + (heap fetches × random_page_cost)
+                = ~20 + (matching_rows × 4.0)
+
+If 500 rows match: index scan = 20 + (500 × 4) = 2,020  → index wins
+If 50,000 rows match: index scan = 20 + (50,000 × 4) = 200,020  → seq scan wins</div>
+    <p style="margin-bottom:0">The planner doesn't guess. It does arithmetic on these numbers every time it evaluates a plan option. <code>reltuples</code> becomes stale after large deletes or inserts — another reason to run <code>ANALYZE</code>.</p>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Stale statistics = wrong plans</span>
+    <p style="margin-bottom:0.75rem">Statistics are collected by <code>ANALYZE</code>, which runs automatically in the background via autovacuum. But autovacuum has a threshold — it only triggers after enough rows have changed. After a large bulk load or delete, your statistics may describe the old table, not the new one.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Scenario: you bulk-import 2 million new job applications overnight.
+
+Old reltuples: 50,000   ← what the planner thinks
+Real rows:    2,050,000  ← what's actually in the table
+
+Planner thinks the table is tiny → chooses seq scan everywhere
+In reality the table is huge → index scans would be much faster
+Result: every query is slower than it should be until ANALYZE runs.</div>
+    <pre style="margin-bottom:0.5rem">-- Run manually after large bulk loads
+ANALYZE applications;
+
+-- Inspect what the planner currently knows about a column
+SELECT * FROM pg_stats WHERE tablename = 'applications' AND attname = 'status';</pre>
+  </div>
+
+
+  <h2>Scan Strategies</h2>
+  <p>Once the planner knows the table size and how selective a filter is, its first decision per table is: <strong>how do I physically read the matching rows?</strong> There are four strategies, each suited to a different situation.</p>
+
+  <div class="callout">
+    <span class="callout-label">Note — heap vs B-tree: two separate things on disk</span>
+    <p style="margin-bottom:0.75rem">When you create a table and add an index, PostgreSQL creates <strong>two separate structures on disk</strong>. They are not the same thing.</p>
+    <div class="arch-diagram" style="margin-bottom:1rem">THE HEAP  (the actual table)
+─────────────────────────────────────────────
+Page 1: [row: id=1, name="Alice", status="pending", score=88, ...]
+         [row: id=2, name="Bob",   status="hired",   score=92, ...]
+         [row: id=3, name="Carol", status="pending", score=74, ...]
+Page 2: [row: id=4, name="Dan",   status="rejected", score=61, ...]
+         ...
+
+Rows are stored in the order they were inserted. No sorting. No structure.
+This is called the heap — just a pile of pages.
+
+
+THE B-TREE INDEX  (a separate sorted lookup structure)
+─────────────────────────────────────────────
+         [Root: id 1–500 | id 501–1000 | ...]
+              ↓
+         [Internal: id 1–250 | id 251–500]
+              ↓
+         [Leaf: id=1 → page 1, row 0]
+                [id=2 → page 1, row 1]
+                [id=3 → page 1, row 2]
+                [id=4 → page 2, row 0]
+
+The index stores just the indexed column(s) + a pointer back to the heap.
+It does NOT store the full row.</div>
+    <p style="margin-bottom:0.75rem">So when you do an <strong>Index Scan</strong>, PostgreSQL uses two structures:</p>
+    <ol style="font-family:var(--font-ui);font-size:0.88rem;line-height:1.8;margin-bottom:0.75rem">
+      <li><strong>B-tree index</strong> — to find <em>where</em> the matching row lives (which page, which slot)</li>
+      <li><strong>Heap</strong> — to actually fetch the full row from that location</li>
+    </ol>
+    <p style="margin-bottom:0">That's why an index scan involves two lookups, not one. And it's why an <strong>Index-Only Scan</strong> is faster — if the index already contains every column the query needs, step 2 (the heap fetch) can be skipped entirely.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Sequential Scan — read the whole table, top to bottom</span>
+    <p style="margin-bottom:0.75rem">The simplest approach: read every single page in the table, check each row against the filter, keep the ones that match. No index involved.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Table: applications (500,000 rows, stored across 6,250 pages)
+
+Sequential scan:
+  Page 1 → read all rows → check filter → keep matches
+  Page 2 → read all rows → check filter → keep matches
+  ...
+  Page 6,250 → done
+
+All I/O is sequential — pages read in physical order.
+SSDs handle sequential reads extremely well.</div>
+    <p style="margin-bottom:0"><strong>Chosen when:</strong> no useful index exists, or the filter matches a large fraction of the table (~5–20%+ of rows). At that point, reading the whole table once is faster than jumping around the heap via an index.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Index Scan — follow the index to specific rows</span>
+    <p style="margin-bottom:0.75rem">Walk the B-tree index to find which rows match, then fetch each of those rows from the heap (the actual table storage).</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Query: WHERE user_id = 42
+
+Index scan:
+  Step 1 → Walk B-tree index on user_id
+            Root → Internal node → Leaf node: "user_id=42 is on heap page 347, row 12"
+
+  Step 2 → Jump to heap page 347, fetch row 12
+            → 1 random I/O to the heap
+
+  Total: a few index page reads + 1 heap fetch. Very fast for 1 row.
+
+Query: WHERE user_id IN (1, 2, 3, ... 10,000)
+  → 10,000 random heap jumps. Each one is a separate random I/O.
+  → At this point, a seq scan of the whole table may actually be faster.</div>
+    <p style="margin-bottom:0"><strong>Chosen when:</strong> the filter is highly selective — returning a small number of rows. Each matching row requires a separate random I/O to the heap, so this gets expensive as the match count grows.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Bitmap Index Scan — collect first, read in order</span>
+    <p style="margin-bottom:0.75rem">A middle ground between the two above. Instead of jumping to each heap row immediately, it first collects all the matching heap page locations into a bitmap — then reads those pages in physical order.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Query: WHERE created_at > '2023-06-01'  (matches ~15,000 rows across many pages)
+
+Pass 1 — scan the index, build a bitmap:
+  Index says rows match on pages: 12, 45, 46, 103, 104, 105, 210, 211 ...
+  Bitmap: [ 0,0,...,1,...,1,1,...,1,1,1,...,1,1,... ]
+           page:  12    45 46  103 104 105  210 211
+
+Pass 2 — read heap pages in physical order:
+  Page 12 → Page 45 → Page 46 → Page 103 → ...
+  Sequential-ish I/O, not random jumps.
+
+Bonus: combine two indexes with AND/OR:
+  Bitmap A: pages matching created_at > '2023-06-01'
+  Bitmap B: pages matching status = 'pending'
+  Bitmap A AND B → only pages where BOTH conditions might be true → read those</div>
+    <p style="margin-bottom:0"><strong>Chosen when:</strong> medium selectivity — too many rows for a plain index scan (too many random I/Os), too few to justify reading the whole table. Also the only strategy that can combine two separate indexes in one query.</p>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Index-Only Scan — never touch the table at all</span>
+    <p style="margin-bottom:0.75rem">If every column the query needs is already stored in the index, PostgreSQL skips the heap entirely. The index has the answer — no need to look anywhere else.</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Index: CREATE INDEX ON applications (user_id, status);
+Query: SELECT status FROM applications WHERE user_id = 42;
+
+Index-only scan:
+  Walk B-tree → leaf node contains: user_id=42, status='pending'
+  That's everything the query asked for.
+  → Never touch the heap. Zero heap I/O.
+
+This is the fastest possible read path — index pages only, often in memory.</div>
+    <p style="margin-bottom:0"><strong>Chosen when:</strong> the index covers all columns referenced in the query (a <strong>covering index</strong>). You design for this deliberately by including extra columns in your index. Covered in Lesson 06.</p>
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Why a small table uses a seq scan even when an index exists</span>
+    <p style="margin-bottom:0.75rem">An index isn't free — using it costs extra steps. The planner does the arithmetic:</p>
+    <div class="arch-diagram" style="margin-bottom:0.75rem">Table: 100 rows, stored on 1 disk page.
+
+Sequential scan cost:
+  Read 1 page → done. Cost ≈ 1 I/O.
+
+Index scan cost:
+  Walk B-tree (2–3 index pages) + fetch each matching row from heap
+  If 10 rows match: 3 index reads + 10 heap reads = 13 I/Os.
+
+Sequential scan wins — it's cheaper to read the whole tiny table
+than to use an index that causes more total I/Os.</div>
+    <p style="margin-bottom:0">This is correct behaviour, not a bug. Don't add indexes to small tables expecting them to help — the planner will ignore them, and it's right to do so.</p>
+  </div>
 
 
   <h2>Join Strategies</h2>
