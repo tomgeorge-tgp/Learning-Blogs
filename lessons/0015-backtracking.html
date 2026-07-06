@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 15 — Backtracking & Combinatorial Search</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 15 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:75%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Data Structures &amp; Algorithms &nbsp;›&nbsp; Recursive &amp; Search Patterns &nbsp;·&nbsp; Lesson 15</div>
+    <div class="pillar-badge">Recursive & Search Patterns</div>
+    <h1 class="lesson-title">Backtracking &amp; Combinatorial<br>Search</h1>
+    <p class="lesson-subtitle">Exploring decision trees with pruning — permutations, subsets, constraint satisfaction.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Pattern</h2>
+  <p>Backtracking is <strong>depth-first search over a decision tree</strong>. Each node in the tree is a partial solution; each edge is a decision that extends it. At every node you do exactly three things, in order, for each available option:</p>
+
+  <pre>function backtrack(state, path):
+  if isComplete(path):            # base case — a leaf that's a full solution
+    record(copy of path)          # COPY — path is shared mutable state
+    return
+
+  for option in candidates(state, path):
+    if not promising(option, state, path):   # PRUNE — skip subtrees that
+      continue                               # cannot produce a valid solution
+
+    apply(option, state, path)    # 1. CHOOSE  — mutate shared state
+    backtrack(state, path)        # 2. EXPLORE — recurse one level deeper
+    undo(option, state, path)     # 3. UN-CHOOSE — restore state EXACTLY</pre>
+
+  <p>The step candidates most often get wrong — or omit entirely — is <strong>un-choose</strong>. <code>path</code> and any auxiliary structures (a <code>used</code> set, a running sum, a column-occupancy array) are <em>shared mutable state</em> threaded through every recursive call. There is one array, not a copy per branch. If you don't undo a choice before trying the next option at the same node, every sibling branch explores from corrupted state — and the bug is silent: you get plausible-looking but wrong output, not a crash. The symmetric discipline is what makes the pattern work: <strong>every mutation before the recursive call has a mirror-image un-mutation after it</strong>. If your choose is <code>path.push(x); used.add(x)</code>, your un-choose is <code>used.delete(x); path.pop()</code> — same operations, reverse order.</p>
+
+  <p>The second defining idea is <strong>pruning</strong>. Brute-force enumeration is exponential by nature: n elements have 2ⁿ subsets and n! orderings — no algorithm that must <em>output</em> all of them can beat that. Backtracking doesn't change the complexity class. Its value is <strong>refusing to descend into subtrees that provably cannot contain a valid solution</strong>: if a partial solution already violates a constraint (running sum exceeds target, two queens attack each other), every extension of it also violates the constraint, so the entire subtree below that node — potentially exponentially many leaves — is skipped with one check. Pruning is a constant-factor and typical-case win inside an exponential class, not an escape from it.</p>
+
+  <table>
+    <thead>
+      <tr><th>Problem family</th><th>Decision at each node</th><th>Pruning strategy</th><th>True worst case</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Permutations</strong></td>
+        <td>Which unused element goes in the next position (a <code>used</code> set, or in-place swap)</td>
+        <td>Skip elements already used; for duplicate inputs, sort + skip equal adjacent unused elements</td>
+        <td>O(n · n!) — n! leaves, O(n) to copy each</td>
+      </tr>
+      <tr>
+        <td><strong>Subsets / combinations</strong></td>
+        <td>Include or exclude element i (binary choice), or "pick next from index ≥ start"</td>
+        <td>Start-index prevents revisiting earlier elements (kills duplicate orderings); stop when remaining elements can't fill the combination</td>
+        <td>O(n · 2ⁿ) — 2ⁿ subsets, O(n) copy each</td>
+      </tr>
+      <tr>
+        <td><strong>Combination sum</strong></td>
+        <td>Which candidate (from start index) to add to the running sum</td>
+        <td>Sort candidates; when sum + candidate &gt; target, <code>break</code> — every later candidate is larger too</td>
+        <td>Exponential — O(2^t) shape where t = target / smallest candidate</td>
+      </tr>
+      <tr>
+        <td><strong>N-Queens</strong></td>
+        <td>Which column gets the queen in the current row</td>
+        <td>O(1) conflict check via <code>cols</code>, <code>diag1 (r−c)</code>, <code>diag2 (r+c)</code> sets — reject before recursing</td>
+        <td>O(n!) — row 1 has n choices, row 2 at most n−1 non-conflicting, …</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Decision tree for Combination Sum — candidates [2, 3, 7], target 7. Pruning one node kills its entire subtree.</div>
+    <pre class="mermaid">
+graph TD
+    R["path = [ ], sum 0"] --> A["choose 2 → sum 2"]
+    R --> B["choose 3 → sum 3"]
+    R --> C["choose 7 → sum 7 ✓"]
+    A --> A1["choose 2 → sum 4"]
+    A --> A2["choose 3 → sum 5"]
+    A --> A3["✗ choose 7 → sum 9 &gt; 7<br/>PRUNED"]
+    A1 --> A11["choose 2 → sum 6"]
+    A1 --> A12["choose 3 → sum 7 ✓"]
+    A11 --> A111["✗ choose 2 → sum 8 &gt; 7<br/>PRUNED — sorted input:<br/>3 and 7 skipped without a call"]
+    A2 --> A21["✗ choose 3 → sum 8 &gt; 7<br/>PRUNED"]
+    B --> B1["choose 3 → sum 6"]
+    B1 --> B11["✗ choose 3 → sum 9 &gt; 7<br/>PRUNED"]
+    C --> S1["record [7]"]
+    A12 --> S2["record [2, 2, 3]"]
+    classDef pruned fill:#f2f2f2,stroke:#bbbbbb,color:#999999,stroke-dasharray: 5 5;
+    classDef success fill:#e6f4ea,stroke:#34a853,color:#1e7e34;
+    class A3,A111,A21,B11 pruned;
+    class C,A12,S1,S2 success;
+    </pre>
+  </div>
+
+  <p>Read the greyed nodes as <strong>whole subtrees that never execute</strong>. The node marked "sum 8" isn't just one skipped call — everything that would have hung below it (choosing 2 again, then 3, then 7…) is gone. And because the candidates are sorted, overshooting with 2 means 3 and 7 must also overshoot, so the loop <code>break</code>s and those siblings are pruned <em>without even a comparison per branch</em>. That is the visual interviewers want articulated: pruning removes subtrees, and the earlier (higher in the tree) you prune, the more exponentially-sized work you never do.</p>
+
+  <h2>Plain English: Mini Hermes Planning a Tool-Call Sequence</h2>
+  <p>Your Mini Hermes Agent has a goal — say, "summarize this week's activity for a memory-graph entity and file it" — and a toolbox: <code>search_memory</code>, <code>read_entity</code>, <code>fetch_messages</code>, <code>summarize</code>, <code>write_memory</code>. A plan is a <em>sequence</em> of tool calls, and not every sequence is viable: <code>summarize</code> needs text in the working context, <code>write_memory</code> needs a summary to exist, <code>fetch_messages</code> needs an entity id that <code>read_entity</code> provides. Finding a valid plan is a search over the tree of possible tool-call sequences — exactly the backtracking template:</p>
+
+  <pre>function plan(goal, worldState, path):
+  if satisfies(worldState, goal):
+    return copy(path)                        # found a viable plan
+
+  if path.length >= MAX_DEPTH:               # budget prune — a plan this long
+    return null                              # isn't worth executing anyway
+
+  for tool in toolbox:
+    if not preconditionsMet(tool, worldState):   # PRUNE: summarize with no
+      continue                                   # text in context? dead branch.
+
+    effects = simulate(tool, worldState)     # CHOOSE — apply the tool's
+    worldState.apply(effects)                # declared effects to sim state
+    path.push(tool)
+
+    result = plan(goal, worldState, path)    # EXPLORE
+    if result: return result                 # first viable plan wins
+
+    path.pop()                               # UN-CHOOSE — revert BOTH the
+    worldState.revert(effects)               # path and the simulated world</pre>
+
+  <p>Walk one concrete trace. Goal state requires <code>summary_written</code>. Depth budget 4.</p>
+  <ol>
+    <li><strong>Choose</strong> <code>write_memory</code> first? Precondition <code>summary_exists</code> is false — <strong>pruned before recursing</strong>. Same for <code>summarize</code> (nothing in context) and <code>fetch_messages</code> (no entity id). Only <code>search_memory</code> and <code>read_entity</code> survive the precondition check at the root: five children collapse to two.</li>
+    <li><strong>Choose</strong> <code>search_memory</code> → explore. From here, choose <code>search_memory</code> again → again → again — depth budget hit with the goal unsatisfied. <strong>Dead end.</strong> Each level returns null, pops the call off <code>path</code>, and reverts the simulated effects. This is the backtrack: the agent walks back up the tree undoing decisions, not restarting from scratch.</li>
+    <li>Back at depth 1 with a clean state, <strong>choose</strong> <code>read_entity</code> → now <code>entity_id</code> exists → <code>fetch_messages</code> unlocks → <code>summarize</code> unlocks → <code>write_memory</code> unlocks → goal satisfied. Return <code>[read_entity, fetch_messages, summarize, write_memory]</code>.</li>
+  </ol>
+
+  <p>Two things to notice, because they're the same two things that matter in interview problems. First, the precondition check is <strong>pruning</strong> — with 5 tools and depth 4, blind enumeration is 5⁴ = 625 sequences; precondition pruning explores a handful. The search stays worst-case exponential in depth (an adversarial toolbox forces it), but real constraint structure makes it cheap in practice. Second, the <strong>un-choose must revert everything choose touched</strong> — both <code>path</code> <em>and</em> <code>worldState</code>. Revert only the path and the next branch simulates from a world where messages were already fetched: the planner emits plans that skip required steps. Stale-state corruption, the classic backtracking bug, in production clothing.</p>
+
+  <h2>Your Stack, Mapped: The Canonical Problems</h2>
+  <table>
+    <thead>
+      <tr><th>LeetCode canon</th><th>Family</th><th>Pruning / dedup strategy</th><th>True complexity</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>46. Permutations</strong></td>
+        <td>Permutations</td>
+        <td><code>used</code> set (or swap index i into position, recurse, swap back)</td>
+        <td>O(n · n!) time, O(n) recursion depth</td>
+      </tr>
+      <tr>
+        <td><strong>78. Subsets</strong></td>
+        <td>Subsets</td>
+        <td>Start-index loop — element i only combines with elements &gt; i, so each subset is generated exactly once</td>
+        <td>O(n · 2ⁿ) time, O(n) depth</td>
+      </tr>
+      <tr>
+        <td><strong>39. Combination Sum</strong></td>
+        <td>Combination sum (reuse allowed)</td>
+        <td>Sort, then <code>break</code> when sum + candidate &gt; target; recurse with start = <code>i</code> (same element reusable)</td>
+        <td>Exponential in target/min(candidate)</td>
+      </tr>
+      <tr>
+        <td><strong>40. Combination Sum II</strong></td>
+        <td>Combination sum (each element once)</td>
+        <td>Recurse with start = <code>i + 1</code>; skip duplicates: <code>if i &gt; start and c[i] == c[i−1]: continue</code></td>
+        <td>O(n · 2ⁿ) worst case</td>
+      </tr>
+      <tr>
+        <td><strong>51. N-Queens</strong></td>
+        <td>Constraint satisfaction</td>
+        <td>Row-by-row placement; O(1) rejection via <code>cols</code> / <code>r−c</code> / <code>r+c</code> hash sets</td>
+        <td>O(n!) time, O(n) state</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>The <code>i</code> vs <code>i + 1</code> distinction in the two Combination Sum rows is where off-by-one bugs live. Passing <code>i</code> means "the current element may be chosen again" (unbounded reuse, LC 39). Passing <code>i + 1</code> means "move past it" (each element once, LC 40). Passing <code>start</code> unchanged, or restarting from 0, means "regenerate every ordering" — you'll emit <code>[2,3]</code> and <code>[3,2]</code> as separate results and fail on duplicates. The start-index isn't bookkeeping; it's the mechanism that makes combinations <em>combinations</em> instead of permutations.</p>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — Mini Hermes Agent</span>
+    The planner sketch above is a real architecture, not an analogy: classical AI planning (STRIPS-style) is backtracking search over action sequences with precondition pruning, and an agent that "tries a tool path, hits a dead end, and revises the plan" is doing exactly this with an LLM proposing the candidate ordering. The design lesson transfers directly: make tool effects <em>explicitly declared and reversible in simulation</em>, so the un-choose step is trivial. If a tool's effects on world state are implicit or entangled, you can't cleanly revert a simulated branch — which is the agent-architecture version of forgetting to backtrack shared state. It's also why real agent frameworks separate <em>planning</em> (simulated, cheap, revertible) from <em>execution</em> (real side effects, not revertible) — you backtrack in the simulator, never in production.
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    Interview scheduling under constraints — interviewer availability, candidate availability, no double-booking — is N-Queens wearing a suit: assign a slot per interview (row), reject assignments conflicting with already-booked slots (column/diagonal check), backtrack when a partial schedule strands a later interview with zero feasible slots. The senior insight is knowing when <em>not</em> to use it: with a handful of interviews, backtracking with constraint checks is fine; at scale, scheduling is NP-hard and production systems switch to constraint solvers or greedy heuristics with repair. "I'd backtrack here, and here's the input size where I'd stop" is a stronger answer than either extreme.
+  </div>
+
+  <h2>Full Worked Trace: Combination Sum</h2>
+  <p>Candidates <code>[2, 3, 7]</code> (sorted), target <code>7</code>, reuse allowed. Real pseudocode with the three phases and the prune marked:</p>
+
+  <pre>function combinationSum(candidates, target):
+  sort(candidates)                       # prerequisite for the break-prune
+  results = []
+  path = []                              # ONE shared array for all branches
+
+  function backtrack(start, remaining):
+    if remaining == 0:
+      results.push(copy(path))           # copy! path keeps mutating after this
+      return
+
+    for i in start .. candidates.length - 1:
+      if candidates[i] > remaining:      # PRUNE: sorted ⇒ every later
+        break                            # candidate overshoots too
+
+      path.push(candidates[i])           # CHOOSE
+      backtrack(i, remaining - candidates[i])   # EXPLORE — 'i' not 'i+1':
+                                                # reuse of same element allowed
+      path.pop()                         # UN-CHOOSE
+
+  backtrack(0, target)
+  return results</pre>
+
+  <p>The execution, step by step. Indentation = recursion depth; every push has its mirrored pop:</p>
+
+  <pre>backtrack(0, 7)                       path = []
+├─ push 2 → backtrack(0, 5)           path = [2]
+│  ├─ push 2 → backtrack(0, 3)        path = [2,2]
+│  │  ├─ push 2 → backtrack(0, 1)     path = [2,2,2]
+│  │  │  └─ candidates[0]=2 > 1 → break        ← PRUNE: kills 2,3,7 subtrees
+│  │  ├─ pop 2                        path = [2,2]      ← un-choose
+│  │  ├─ push 3 → backtrack(1, 0)     path = [2,2,3]
+│  │  │  └─ remaining == 0 → record [2,2,3]  ✓
+│  │  ├─ pop 3                        path = [2,2]
+│  │  └─ candidates[2]=7 > 3 → break           ← PRUNE
+│  ├─ pop 2                           path = [2]
+│  ├─ push 3 → backtrack(1, 2)        path = [2,3]
+│  │  └─ candidates[1]=3 > 2 → break           ← PRUNE (start=1, 2 not retried)
+│  ├─ pop 3                           path = [2]
+│  └─ candidates[2]=7 > 5 → break              ← PRUNE
+├─ pop 2                              path = []
+├─ push 3 → backtrack(1, 4)           path = [3]
+│  ├─ push 3 → backtrack(1, 1)        path = [3,3]
+│  │  └─ candidates[1]=3 > 1 → break           ← PRUNE
+│  ├─ pop 3                           path = [3]
+│  └─ candidates[2]=7 > 4 → break              ← PRUNE
+├─ pop 3                              path = []
+├─ push 7 → backtrack(2, 0)           path = [7]
+│  └─ remaining == 0 → record [7]  ✓
+└─ pop 7                              path = []
+
+results = [[2,2,3], [7]]</pre>
+
+  <p>Three details in this trace that are the difference between a working solution and a subtle disaster:</p>
+  <ul>
+    <li><strong><code>copy(path)</code> at the record step.</strong> Push a reference to <code>path</code> itself and every "result" is the same array — which is empty by the time the function returns, because every push got popped. You return <code>[[], []]</code>. This is the single most common backtracking bug in JavaScript and Python, and it produces no error, just garbage.</li>
+    <li><strong>The <code>break</code> vs <code>continue</code> prune.</strong> With unsorted candidates you can only <code>continue</code> (skip this one candidate). Sorting upgrades it to <code>break</code> — one overshoot proves all remaining siblings overshoot. At <code>backtrack(0, 1)</code> that one break eliminated three subtrees in a single comparison. Prune as high in the tree and as cheaply as you can; a prune that fires at the leaves saves almost nothing because you've already paid for the path down.</li>
+    <li><strong><code>backtrack(i, …)</code> not <code>backtrack(i+1, …)</code>, and never <code>backtrack(0, …)</code>.</strong> Passing <code>i</code> allows <code>[2,2,3]</code>. Passing <code>i+1</code> would forbid reuse (that's Combination Sum II). Restarting at 0 would also find <code>[3,2,2]</code> and <code>[2,3,2]</code> — duplicates by reordering. Notice in the trace: after popping into <code>path=[2,3]</code>, the search does <em>not</em> retry 2, because start is 1. That asymmetry is deliberate and load-bearing.</li>
+  </ul>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — The standard opener</div>
+          <div class="playbook-q-text">"Generate all permutations of a list of distinct integers. Walk me through your approach before you code."</div>
+          <div class="playbook-q-probe">Follow-up: "What changes if the input contains duplicates?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"It's backtracking over a decision tree: each level fixes the next position, each branch is which unused element fills it. I keep a shared <code>path</code> and a <code>used</code> set. At each node, for each element not in <code>used</code>: choose — push it and mark used; explore — recurse; un-choose — unmark and pop, so the next sibling sees clean state. When <code>path</code> length equals n, I record a <em>copy</em> — the path array itself keeps mutating, so pushing the reference would give me n! views of the same, ultimately empty, array. Complexity is O(n · n!): n! leaves, and the copy at each leaf costs O(n). Space is O(n) for the recursion depth and path, excluding the output. The un-choose step is the part I'd flag explicitly: choose and un-choose are mirror images around the recursive call, and if I mutate anything else along the way, it gets the same treatment."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"With duplicates, distinct orderings of identical values collapse — [1,1,2] has 3 unique permutations, not 6. Sort first, then add one pruning line: skip element i if <code>nums[i] == nums[i−1]</code> and i−1 is currently <em>unused</em> — meaning an identical element at the same tree level was already tried, so this branch would regenerate an identical subtree. That's dedup by pruning at generation time, which beats generating all n! and filtering through a set — the whole point is never materializing the duplicate subtrees."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Complexity honesty</div>
+          <div class="playbook-q-text">"What's the actual time complexity of your N-Queens solution? Does pruning change the Big-O?"</div>
+          <div class="playbook-q-probe">Follow-up: "Then what is pruning buying you, concretely?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Worst case O(n!): the first row has n column choices, the second at most n−1 that don't conflict, then at most n−2, and so on — the product is bounded by n!. Each placement's conflict check is O(1) with three hash sets — columns, r−c diagonals, r+c diagonals. And no, pruning does not change the Big-O. Big-O is a worst-case bound, and I can't prove pruning eliminates a fraction of the tree that grows with n in the worst case. The honest statement is: still O(n!), but pruning makes typical instances feasible. Hand-waving 'it's fast because of pruning' is exactly the answer a senior interviewer is fishing to catch — I'd rather state the true bound and then explain why practice beats it."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Subtree elimination. A conflict detected at row 2 kills every completion of that prefix — for n=8 that's on the order of 6! ≈ 720 board completions never examined, from one O(1) check. Because pruning fires near the root where subtrees are largest, the explored tree is a sliver of the full n! tree — that's why 8-Queens finds all 92 solutions instantly despite the factorial bound. Pruning changes the constant and the typical case, sometimes by orders of magnitude; it just can't move the worst case, because an adversarial instance can defeat every prune."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — The gotcha: corrupted shared state</div>
+          <div class="playbook-q-text">"Here's a backtracking solution that returns wrong answers only for some inputs — no exceptions, output just has missing and malformed entries. Where do you look first?"</div>
+          <div class="playbook-q-probe">Follow-up: "Why not sidestep all of this by passing a fresh copy of the state into every recursive call?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Missing-and-malformed with no exception is the signature of shared mutable state not being restored. I check three places, in order. One: does every mutation before the recursive call have its exact mirror after it — <code>path.push</code>/<code>path.pop</code>, <code>used.add</code>/<code>used.delete</code>, sum increment/decrement? A missed undo means the next sibling branch explores with a stale element still marked, so it skips valid options — that's the missing output. Two: is there an early <code>return</code> or <code>continue</code> between choose and un-choose that jumps past the undo? That leaks state only on the code path that triggers it — which is exactly why only some inputs fail. Three: is the record step storing a copy, or a live reference that later branches keep mutating — that's the malformed output. The discipline that prevents all three: choose and un-choose adjacent to the recursive call, nothing between explore and undo."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Copying does eliminate the bug class — each call owns its state, nothing to restore. The cost: O(n) copy per node instead of O(1) push/pop, multiplied across an exponential number of nodes, plus O(n) memory per stack frame instead of one shared structure. For subsets that's an extra factor of n over 2ⁿ nodes. It's a legitimate trade — in concurrent search or persistent-data-structure languages it's the default — but in an interview I mutate-and-undo and say why: the undo discipline is cheap once you're rigorous about it, and the copy cost is real. Mentioning the trade-off, then choosing deliberately, is the senior move."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <h2>Primary Sources</h2>
+  <ul>
+    <li><strong>Skiena, The Algorithm Design Manual — Combinatorial Search chapter</strong> — the canonical treatment of backtracking as tree search, with pruning and the subsets/permutations/N-Queens trio worked in the same framework used here.</li>
+    <li><a href="https://en.wikipedia.org/wiki/Backtracking" target="_blank">Backtracking — Wikipedia</a> — the general template (root/reject/accept/first/next) and its relationship to constraint satisfaction and branch-and-bound.</li>
+  </ul>
+
+  <h2>Navigation</h2>
+  <p>
+    <strong>Previous:</strong> <a href="0014-binary-search-patterns.html">Lesson 14 — Binary Search Patterns</a><br>
+    <strong>Next:</strong> <a href="0016-dynamic-programming.html">Lesson 16 — Dynamic Programming Patterns</a>
+  </p>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Still unclear why passing <code>i</code> vs <code>i+1</code> as the start index changes the problem from "reuse allowed" to "each element once"? Want to work the in-place-swap version of permutations, where the un-choose is a swap-back instead of a pop? Or trace exactly how one missing <code>pop()</code> corrupts the sibling branches in the Combination Sum trace above?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 15 &nbsp;·&nbsp; Backtracking & Combinatorial Search &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "In the backtracking template, what exactly must the un-choose step do?",
+    options: [
+      "Return the partial solution to the caller so it can be recorded",
+      "Reverse every mutation the choose step made to shared state, in reverse order, so the next sibling branch explores from clean state",
+      "Delete the current branch's results if the branch failed",
+      "Reset the entire search state to the root and restart"
+    ],
+    answer: 1,
+    explanation: "There is ONE shared path/used-set/running-sum threaded through all calls, not a copy per branch. Un-choose is the exact mirror of choose (push/pop, add/delete) around the recursive call. Miss it and sibling branches see stale data — silently wrong output, no crash."
+  },
+  {
+    q: "Does pruning change the Big-O of a backtracking solution like N-Queens?",
+    options: [
+      "Yes — pruning reduces N-Queens from O(n!) to O(n²)",
+      "Yes — any pruned search is polynomial by definition",
+      "No — the worst case remains exponential/factorial; pruning improves typical cases and constants by skipping subtrees, but an adversarial instance defeats every prune",
+      "No — but only because conflict checks cost O(n) each, cancelling the savings"
+    ],
+    answer: 2,
+    explanation: "Big-O is a worst-case bound. Pruning can eliminate enormous subtrees on real instances — which is why 8-Queens is instant — but you can't prove it removes a growing fraction of the tree in the worst case. The honest answer: still O(n!), dramatically faster in practice."
+  },
+  {
+    q: "In Combination Sum with sorted candidates and start-index i, what does recursing with backtrack(i, …) versus backtrack(i+1, …) control?",
+    options: [
+      "i is a bug that causes infinite recursion; i+1 is always correct",
+      "i allows reusing the current element (LC 39); i+1 moves past it so each element is used at most once (LC 40); restarting at 0 would regenerate reordered duplicates",
+      "i skips duplicates in the input; i+1 includes them",
+      "They are interchangeable because the running-sum prune catches the difference"
+    ],
+    answer: 1,
+    explanation: "The start index is what makes combinations combinations. Passing i permits [2,2,3]; passing i+1 forbids reuse; passing 0 would emit [2,3,2] and [3,2,2] as separate 'results'. It's not bookkeeping — it's the dedup mechanism. (i doesn't infinitely recurse because remaining strictly decreases.)"
+  },
+  {
+    q: "A permutations solution does results.push(path) instead of results.push([...path]). What happens?",
+    options: [
+      "It throws a reference error on the second recursive call",
+      "It works but uses O(n!) extra memory",
+      "Results contain duplicates because the used set is bypassed",
+      "Every entry in results is the SAME array object — which is empty after the search finishes, since every push was eventually popped"
+    ],
+    answer: 3,
+    explanation: "path is shared mutable state; pushing it stores a live reference, not a snapshot. All n! 'results' alias one array that the un-choose steps drain back to empty. No error is thrown — you just return n! empty arrays. Copy at the record step, always."
+  },
+  {
+    q: "Why does sorting the candidates first upgrade the Combination Sum prune from 'continue' to 'break'?",
+    options: [
+      "Sorting lets binary search find the target directly",
+      "If the current candidate overshoots the remaining target, every later candidate is ≥ it and overshoots too — one comparison eliminates all remaining sibling subtrees at this node",
+      "Sorting removes duplicate candidates so fewer branches exist",
+      "It doesn't — break and continue prune identically"
+    ],
+    answer: 1,
+    explanation: "Unsorted, an overshoot only tells you about that one candidate (continue). Sorted, overshoot is monotone across the remaining siblings, so break kills them all at once. Prune as high in the tree and as cheaply as possible — the subtrees near the root are the exponentially big ones."
+  }
+];
+initQuiz('quiz', QUIZ_DATA, '0015');
+</script>
+
+<script>
+const LESSON_ID = '0015';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

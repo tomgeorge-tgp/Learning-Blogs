@@ -11,13 +11,29 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 2 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:10%"></div>
+  </div>
 
   <!-- Header -->
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 02</div>
-    <div class="pillar-badge">Database Internals</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Storage Engine Internals &nbsp;·&nbsp; Lesson 02</div>
+    <div class="pillar-badge">Storage Engine Internals</div>
     <h1 class="lesson-title">Database Indexing<br>& Internals</h1>
     <p class="lesson-subtitle">Why queries are slow, how indexes fix it, and what Pinecone's HNSW actually does.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <!-- The problem -->
@@ -29,6 +45,33 @@
   <div class="callout warning">
     <span class="callout-label">The rule</span>
     A full table scan is fine for small tables. At production scale — 100K+ rows — unindexed queries on filtered columns will kill your database.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Sequential Scan vs Index Scan</div>
+    <pre class="mermaid">
+graph LR
+    subgraph SEQ["Sequential scan — no index"]
+        S1["Row 1"] --> S2["Row 2"] --> S3["Row 3"] --> S4["...row n"] --> S5["Match found<br/>(after checking every row)"]
+    end
+    subgraph IDX["Index scan — B-Tree"]
+        I1["Root node"] --> I2["Branch node"] --> I3["Leaf node"] --> I4["Heap fetch via ctid<br/>(direct I/O)"]
+    end
+    style S5 fill:#fee2e2,stroke:#dc2626
+    style I4 fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">B-Tree Lookup Path — <code style="font-family:inherit">WHERE id = 31</code></div>
+    <pre class="mermaid">
+graph TD
+    A["ROOT NODE<br/>[25]"] -->|"31 &gt; 25 → go right child"| B["INTERNAL NODE<br/>[44, 58]"]
+    B -->|"31 &lt; 44 → go left child"| C["LEAF NODE<br/>[25, 31]"]
+    C -->|"key found, read ctid<br/>(page 4, slot 2)"| D["HEAP FETCH<br/>full row returned"]
+    style A fill:#dbeafe,stroke:#2563eb
+    style D fill:#dcfce7,stroke:#16a34a
+    </pre>
   </div>
 
   <!-- B-Tree -->
@@ -398,6 +441,39 @@ rejected:     May → Feb         (resets again)</code></pre>
     Your multi-tenant queries always filter by <code>tenant_id</code> first. Put it as the first column in every composite index. This isolates tenant data and the query planner can use the index for all downstream filters.
   </div>
 
+  <h3>EXPLAIN ANALYZE — before and after the composite index</h3>
+  <p>Here's what the plan shape actually looks like on a 2M-row <code>applications</code> table (applyGOAT scale) for:</p>
+  <pre><code>EXPLAIN ANALYZE
+SELECT * FROM applications
+WHERE tenant_id = 'goat-001' AND status = 'interviewing'
+ORDER BY created_at DESC
+LIMIT 20;</code></pre>
+
+  <p><strong>Before — no index on (tenant_id, status):</strong></p>
+  <pre><code>Limit  (cost=45123.08..45123.13 rows=20 width=812) (actual time=812.441..812.449 rows=20 loops=1)
+  ->  Sort  (cost=45123.08..45748.30 rows=250120 width=812) (actual time=812.439..812.443 rows=20 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 41kB
+        ->  Seq Scan on applications  (cost=0.00..38210.00 rows=250120 width=812) (actual time=0.031..780.112 rows=250311 loops=1)
+              Filter: ((tenant_id = 'goat-001'::text) AND (status = 'interviewing'::text))
+              Rows Removed by Filter: 1749689
+Planning Time: 0.412 ms
+Execution Time: 812.501 ms</code></pre>
+
+  <p><strong>After — <code>CREATE INDEX idx_apps_tenant_status_date ON applications(tenant_id, status, created_at DESC);</code></strong></p>
+  <pre><code>Limit  (cost=0.56..8.91 rows=20 width=812) (actual time=0.045..0.198 rows=20 loops=1)
+  ->  Index Scan using idx_apps_tenant_status_date on applications  (cost=0.56..2104.33 rows=5030 width=812) (actual time=0.043..0.191 rows=20 loops=1)
+        Index Cond: ((tenant_id = 'goat-001'::text) AND (status = 'interviewing'::text))
+Planning Time: 0.089 ms
+Execution Time: 0.221 ms</code></pre>
+
+  <p>Two things changed in the plan shape: the <code>Seq Scan</code> (cost starting at 0.00, scanning all 2M rows and discarding 1.75M of them) became an <code>Index Scan</code> that goes straight to the ~5,030 matching rows. And the separate <code>Sort</code> node disappeared entirely — because the index already stores rows in <code>created_at DESC</code> order within each <code>(tenant_id, status)</code> group, PostgreSQL doesn't need to sort after fetching. That's a ~3,600× drop in execution time from one index.</p>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    This is not a hypothetical query — it's the shape of applyGOAT's recruiter dashboard: "show the 20 most recent applications for this tenant in status X." Every tenant shares the same <code>applications</code> table, so without <code>tenant_id</code> leading the index, one tenant's slow unindexed query burns CPU that every other tenant is also waiting on — the classic multi-tenant noisy-neighbor problem. The composite index doesn't just make this query fast, it isolates tenants from each other's query cost.
+  </div>
+
   <!-- PostgreSQL index types -->
   <h2>PostgreSQL Index Types Beyond B-Tree</h2>
 
@@ -636,7 +712,7 @@ Layer 0 (dense):  ... all vectors with local edges ...</code></pre>
   <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
     <a href="0001-cap-theorem.html">← Lesson 01: CAP Theorem</a>
     &nbsp;|&nbsp;
-    <strong>Next:</strong> <em>Lesson 03 — coming soon</em>
+    <strong>Next:</strong> <a href="0003-database-scaling.html">Lesson 03 — Database Scaling</a>
     &nbsp;|&nbsp;
     <a href="../reference/">Reference documents</a>
   </div>
@@ -670,7 +746,12 @@ function togglePlaybook(trigger) {
 }
 </script>
 
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
 <!-- Quiz -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -731,7 +812,79 @@ const QUIZ_DATA = [
   }
 ];
 
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0002');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0002';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

@@ -26,12 +26,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 4 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:20%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 04</div>
-    <div class="pillar-badge">SQL</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Query Layer (SQL) &nbsp;·&nbsp; Lesson 04</div>
+    <div class="pillar-badge">Query Layer (SQL)</div>
     <h1 class="lesson-title">SQL Fundamentals<br>& Query Anatomy</h1>
     <p class="lesson-subtitle">The shape of every SQL query, and why the order you write it is not the order it runs.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>The Six Clauses of a SELECT</h2>
@@ -97,6 +113,62 @@ LIMIT    5;</code></pre>
   <div class="callout warning">
     <span class="callout-label">Classic mistake this catches</span>
     <code>WHERE total &gt; 10</code> fails — <code>total</code> is a SELECT alias and doesn't exist at step 2. You need <code>HAVING COUNT(*) &gt; 10</code> instead. Understanding execution order explains exactly why.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">SQL Logical Execution Order</div>
+    <pre class="mermaid">
+graph LR
+    A["FROM<br/>build working set"] --> B["JOIN<br/>combine tables"]
+    B --> C["WHERE<br/>filter rows"]
+    C --> D["GROUP BY<br/>collapse into groups"]
+    D --> E["HAVING<br/>filter groups"]
+    E --> F["SELECT<br/>compute output + aliases"]
+    F --> G["ORDER BY<br/>sort (aliases valid here)"]
+    G --> H["LIMIT / OFFSET<br/>slice result"]
+    style A fill:#dbeafe,stroke:#2563eb
+    style F fill:#fef3c7,stroke:#d97706
+    style H fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <h3>Walkthrough — tracing the applyGOAT query above through the pipeline</h3>
+  <p>Take the exact query from the top of this lesson and run it through each step with real numbers, on a tenant with ~40,000 applications since <code>2024-01-01</code>:</p>
+  <pre><code>Step 1 — FROM applications
+  Working set = every row in the applications table (2,000,000 rows)
+
+Step 2 — JOIN users ON applications.user_id = users.id
+  Each application row is matched to its user row.
+  Applications whose user_id has no matching user disappear here (INNER JOIN semantics).
+  Working set ≈ 1,998,600 rows (a few thousand orphaned rows dropped)
+
+Step 3 — WHERE tenant_id = 'goat-001' AND created_at > '2024-01-01'
+  Filters down to just this tenant's post-2024 applications.
+  Working set = 40,000 rows
+
+Step 4 — GROUP BY job_status
+  Collapses 40,000 rows into groups, one per distinct job_status value.
+  Working set = 6 groups: applied, interviewing, offered, rejected, withdrawn, hired
+
+Step 5 — HAVING COUNT(*) > 10
+  Drops any group with 10 or fewer rows.
+  'hired' has only 4 rows this period → dropped.
+  Working set = 5 groups
+
+Step 6 — SELECT job_status, COUNT(*) AS total, AVG(score) AS avg_score
+  Computes total and avg_score per remaining group.
+  Aliases 'total' and 'avg_score' exist for the first time here.
+
+Step 7 — ORDER BY avg_score DESC
+  Sorts the 5 groups using the alias defined in step 6 — only valid because
+  ORDER BY runs after SELECT.
+
+Step 8 — LIMIT 5
+  Takes the top 5. In this case all 5 remaining groups qualify.</code></pre>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    This is applyGOAT's status-breakdown query, verbatim — the one a recruiter dashboard runs to show "how many candidates are in each stage, and which stage has the best average score." The JOIN step is easy to gloss over, but it's where a data-quality issue in applyGOAT would actually surface: if a webhook race condition ever leaves an <code>applications</code> row with a <code>user_id</code> that doesn't resolve, INNER JOIN silently drops it at step 2 — before WHERE, GROUP BY, or HAVING ever see it. The row doesn't fail loudly; it just never appears in the report. Knowing exactly which pipeline step would swallow that row is the difference between a five-minute diagnosis and an afternoon of guessing.
   </div>
 
 
@@ -497,6 +569,7 @@ SELECT user_id FROM premium_users;</code></pre>
 
   <hr>
   <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0003-database-scaling.html">Lesson 03 — Database Scaling</a> &nbsp;|&nbsp;
     <strong>Next:</strong> <a href="0005-query-execution.html">Lesson 05 — Query Execution &amp; the Planner</a> &nbsp;|&nbsp;
     <a href="0002-database-indexing.html">Lesson 02 — Indexing (how results are fetched fast)</a>
   </div>
@@ -523,6 +596,12 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -588,7 +667,79 @@ const QUIZ_DATA = [
     explanation: "SQL uses three-valued logic (TRUE, FALSE, NULL). NOT IN with a NULL value in the subquery results in NULL comparisons, which propagate as UNKNOWN, making the WHERE clause return no rows at all. This is a silent production bug. Use NOT EXISTS instead — it's NULL-safe."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0004');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0004';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

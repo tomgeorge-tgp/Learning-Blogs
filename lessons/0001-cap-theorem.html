@@ -11,13 +11,29 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 1 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:5%"></div>
+  </div>
 
   <!-- Header -->
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 01</div>
-    <div class="pillar-badge">Distributed Systems</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Distributed Systems Foundations &nbsp;·&nbsp; Lesson 01</div>
+    <div class="pillar-badge">Distributed Systems Foundations</div>
     <h1 class="lesson-title">CAP Theorem &<br>Consistency Models</h1>
     <p class="lesson-subtitle">The trade-off that governs every database in your stack.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <!-- The core idea -->
@@ -50,6 +66,20 @@
   <div class="callout warning">
     <span class="callout-label">Critical nuance</span>
     Network partitions <em>always happen</em> in real distributed systems — hardware fails, packets drop. So <strong>P is not optional</strong>. The real choice is: when a partition occurs, do you sacrifice <strong>C</strong> (serve potentially stale data) or <strong>A</strong> (refuse to respond)? Every distributed database makes this choice.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">The Decision, As a Flow</div>
+    <pre class="mermaid">
+graph TD
+    A["Network partition detected<br/>(nodes can't talk to each other)"] --> B{"Which does this request need:<br/>Consistency or Availability?"}
+    B -->|"Prioritize Consistency"| C["Refuse to respond,<br/>or block, until nodes agree"]
+    B -->|"Prioritize Availability"| D["Respond with local data,<br/>even if it may be stale"]
+    C --> E["CP system<br/>e.g. PostgreSQL, synchronous replication"]
+    D --> F["AP system<br/>e.g. Pinecone, eventual consistency"]
+    style E fill:#dcfce7,stroke:#16a34a
+    style F fill:#dbeafe,stroke:#2563eb
+    </pre>
   </div>
 
   <!-- Plain English -->
@@ -132,6 +162,11 @@
       </tr>
     </tbody>
   </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    The AI Sales Agent (LangGraph + RAG, insurance) makes the same CAP call twice, for different reasons. Conversation and session state persisted to PostgreSQL is <strong>CP</strong> — a dropped or duplicated agent turn is worse than a slow one; the graph must know exactly which node it's on. The RAG retrieval step against the vector store is <strong>AP</strong> — if the index lags a few seconds behind the latest document ingest, the agent still answers, it just cites slightly older material. Same theorem, same two systems doing the same two jobs as in applyGOAT, different domain — this is the pattern to name explicitly in an interview: <em>"my transactional state is CP, my retrieval layer is AP, and that split is deliberate."</em>
+  </div>
 
   <!-- Consistency Models Spectrum -->
   <h2>Consistency Is Not Binary</h2>
@@ -297,7 +332,7 @@
   <!-- Navigation -->
   <hr>
   <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
-    <strong>Next:</strong> <em>Lesson 02 — coming soon</em> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0002-database-indexing.html">Lesson 02 — Database Indexing &amp; Internals</a> &nbsp;|&nbsp;
     <a href="../reference/">Reference documents</a>
   </div>
 
@@ -332,7 +367,12 @@ function togglePlaybook(trigger) {
 }
 </script>
 
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
 <!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -393,7 +433,79 @@ const QUIZ_DATA = [
   }
 ];
 
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0001');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0001';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

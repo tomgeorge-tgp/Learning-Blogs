@@ -125,13 +125,29 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 3 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:15%"></div>
+  </div>
 
   <!-- Header -->
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 03</div>
-    <div class="pillar-badge">Database Scaling</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Scaling &amp; Architecture &nbsp;·&nbsp; Lesson 03</div>
+    <div class="pillar-badge">Scaling &amp; Architecture</div>
     <h1 class="lesson-title">Database Scaling:<br>From One Machine to a Planet</h1>
     <p class="lesson-subtitle">How Instagram, Discord, and Google broke every database ceiling, layer by layer.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <!-- The Mental Model -->
@@ -184,6 +200,37 @@
   <div class="callout warning">
     <span class="callout-label">applyGOAT right now</span>
     You're at layer 1. A well-tuned single PostgreSQL node handles tens of thousands of QPS. Most startups at 20K users never need layer 2. Know the layers so you can make the right call when — if — you reach each ceiling.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Topology — Client → Load Balancer → Primary + Read Replicas</div>
+    <pre class="mermaid">
+graph TD
+    C["Client request"] --> LB["Load Balancer"]
+    LB -->|"writes"| P["Primary<br/>(PostgreSQL)"]
+    LB -->|"reads"| R1["Read Replica 1"]
+    LB -->|"reads"| R2["Read Replica 2"]
+    P -->|"WAL streaming"| R1
+    P -->|"WAL streaming"| R2
+    style P fill:#dbeafe,stroke:#2563eb
+    </pre>
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Sharded Cluster — Split by tenant_id</div>
+    <pre class="mermaid">
+graph TD
+    App["Application layer"] --> Router{"Shard router<br/>hash(tenant_id) mod N"}
+    Router -->|"tenant range 0"| S0["Shard 0 Primary<br/>+ read replicas"]
+    Router -->|"tenant range 1"| S1["Shard 1 Primary<br/>+ read replicas"]
+    Router -->|"tenant range 2"| S2["Shard 2 Primary<br/>+ read replicas"]
+    style Router fill:#fef3c7,stroke:#d97706
+    </pre>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    This is applyGOAT's actual scaling path, in order. Layer 1 (single primary) holds until connection/WAL throughput is exhausted — not "it feels slow," a specific measurable ceiling. Layer 2 (read replicas) is the first move, since most applyGOAT traffic is reads (resumes, job matches, cover letters) — but it introduces read-your-own-writes anomalies the moment a user edits their profile and reloads against a lagging replica (Part 2). Layer 4 (sharding) only gets pulled when a single primary's WAL can't absorb write volume anymore — and because applyGOAT is already multi-tenant, <code>tenant_id</code> is the natural shard key. The cost that shows up immediately: any cross-tenant analytics query (e.g. "total applications across all tenants this month") turns from one query into a scatter-gather across every shard. Per-tenant queries — the overwhelming majority of applyGOAT's traffic — stay single-shard and cheap.
   </div>
 
 
@@ -1509,6 +1556,7 @@ Latency = slowest shard. One slow shard stalls the whole response.</div>
   <hr>
   <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
     <strong>Previous:</strong> <a href="0002-database-indexing.html">Lesson 02 — Database Indexing &amp; Internals</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0004-sql-fundamentals.html">Lesson 04 — SQL Fundamentals &amp; Query Anatomy</a> &nbsp;|&nbsp;
     <strong>See also:</strong> <a href="0001-cap-theorem.html">Lesson 01 — CAP Theorem (full PACELC treatment)</a>
   </div>
 
@@ -1541,7 +1589,12 @@ function togglePlaybook(trigger) {
 }
 </script>
 
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
 <!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -1635,7 +1688,79 @@ const QUIZ_DATA = [
   }
 ];
 
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0003');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0003';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

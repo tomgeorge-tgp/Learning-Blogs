@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 17 — Python Execution Model: Bytecode & the CPython VM</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 17 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:85%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Python &amp; Backend Systems &nbsp;›&nbsp; Python Runtime Internals &nbsp;·&nbsp; Lesson 17</div>
+    <div class="pillar-badge">Python Runtime Internals</div>
+    <h1 class="lesson-title">Python Execution Model:<br>Bytecode &amp; the CPython VM</h1>
+    <p class="lesson-subtitle">What actually happens between "def" and a running program — tokenizer, AST, compiler, bytecode, frames, and the object model underneath.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definition</h2>
+  <p>"Python is interpreted" is imprecise. CPython (the reference implementation, and the one running your FastAPI services) compiles source to an intermediate <strong>bytecode</strong>, then executes that bytecode on a stack-based virtual machine. Six stages, every time you run a <code>.py</code> file:</p>
+
+  <table>
+    <thead>
+      <tr><th>Stage</th><th>Input → Output</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Tokenizer (lexer)</strong></td><td>Source text → token stream</td><td>Splits <code>def score(a, b):</code> into tokens: <code>NAME def</code>, <code>NAME score</code>, <code>OP (</code>, <code>NAME a</code>, … No meaning attached yet, just symbols.</td></tr>
+      <tr><td><strong>Parser</strong></td><td>Tokens → AST</td><td>Applies Python's grammar to build an Abstract Syntax Tree — a nested structure of <code>FunctionDef</code>, <code>BinOp</code>, <code>Return</code> nodes. This is the same AST <code>ast.parse()</code> gives you.</td></tr>
+      <tr><td><strong>Compiler</strong></td><td>AST → bytecode</td><td>Walks the AST and emits bytecode instructions (<code>LOAD_FAST</code>, <code>BINARY_ADD</code>, <code>RETURN_VALUE</code>, …) plus a <code>code</code> object holding constants, names, and metadata.</td></tr>
+      <tr><td><strong>Cache (.pyc)</strong></td><td>Bytecode → disk</td><td>Compiled bytecode is cached in <code>__pycache__/*.pyc</code>, keyed by source hash/mtime, so re-imports skip tokenizing/parsing/compiling.</td></tr>
+      <tr><td><strong>Python Virtual Machine (PVM)</strong></td><td>Bytecode → execution</td><td>A big <code>switch</code> loop (<code>ceval.c</code>) that reads one bytecode instruction at a time and mutates a per-call <strong>frame</strong>: an operand stack, local variables, and an instruction pointer.</td></tr>
+      <tr><td><strong>Object model</strong></td><td>Runtime values</td><td>Every value — int, string, your Pydantic model — is a <code>PyObject*</code>: a heap allocation with a type pointer and a reference count. This is what memory management (refcounting + GC) operates on.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">See it yourself</span>
+    <code>import dis; dis.dis(score)</code> prints the exact bytecode the compiler emitted for a function. This is not a metaphor for what Python does — it's a direct dump of the instructions the VM executes. Any time you're unsure what an expression "actually does" (is a list comprehension really faster? does <code>+=</code> mutate in place?), <code>dis</code> answers definitively.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Source to running program — the full pipeline</div>
+    <pre class="mermaid">
+graph LR
+    A["Source: .py file"] --> B["Tokenizer<br/>(lexer)"]
+    B --> C["Parser<br/>builds AST"]
+    C --> D["Compiler<br/>AST → bytecode"]
+    D --> E["code object<br/>(bytecode + constants + names)"]
+    E -.cached as.-> F[".pyc file<br/>__pycache__/"]
+    E --> G["Python Virtual Machine<br/>(ceval.c main loop)"]
+    G --> H["Frame object<br/>(stack + locals + instruction pointer)"]
+    H --> I["PyObject* values<br/>(refcounted heap objects)"]
+    style E fill:#dbeafe,stroke:#2563eb
+    style G fill:#fef3c7,stroke:#d97706
+    style I fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <h2>Plain English — Tracing applyGOAT's Resume Scorer</h2>
+  <p>applyGOAT has a plain function that scores a resume against a job description:</p>
+  <pre>def score(matched: int, total: int) -> float:
+    return matched / total if total else 0.0</pre>
+
+  <p>Nothing here is magic — trace every stage. <strong>Tokenizing</strong> turns this into a flat stream: <code>NAME(def)</code>, <code>NAME(score)</code>, <code>OP(()</code>, <code>NAME(matched)</code>, <code>OP(:)</code>, <code>NAME(int)</code>… — pure lexical symbols, no understanding of "function" yet. <strong>Parsing</strong> imposes Python's grammar on that stream and builds a tree: a <code>FunctionDef</code> node named <code>score</code>, containing an <code>If</code> node testing <code>total</code>, whose branches are a <code>BinOp(Div)</code> and a constant <code>0.0</code>. <strong>Compiling</strong> walks that tree depth-first and emits stack-machine instructions:</p>
+  <pre>  2           0 LOAD_FAST                1 (total)
+              2 POP_JUMP_IF_FALSE        8
+              4 LOAD_FAST                0 (matched)
+              6 LOAD_FAST                1 (total)
+              8 BINARY_TRUE_DIVIDE
+             10 RETURN_VALUE
+        >>    8 LOAD_CONST               1 (0.0)
+             10 RETURN_VALUE</pre>
+
+  <p>Now the <strong>PVM</strong> runs this, one instruction at a time, against a fresh <strong>frame</strong> created for this call. <code>LOAD_FAST 1</code> pushes the local variable <code>total</code>'s value onto the frame's operand stack. <code>POP_JUMP_IF_FALSE</code> pops it, tests truthiness, and either falls through or jumps to offset 8. <code>BINARY_TRUE_DIVIDE</code> pops the top two stack values and pushes their quotient — a brand-new <code>PyObject*</code> float, heap-allocated with refcount 1. <code>RETURN_VALUE</code> pops that object and hands it back to the caller's frame, and this function's frame is discarded. Every call to <code>score()</code> — thousands of times per resume-batch job — repeats exactly this: new frame, same bytecode, same object-allocation pattern. This is why hot paths in applyGOAT's scoring loop are sensitive to how many objects get allocated per call — every temporary float, every intermediate list, is a refcounted heap object the VM must create and eventually free.</p>
+
+  <h2>Your Stack, Mapped to the Execution Model</h2>
+  <p>Five places this lesson's pipeline shows up in code you actually run. Each row below first says the idea in plain words, then connects it to your stack.</p>
+
+  <table>
+    <thead>
+      <tr><th>Concept</th><th>Where you actually touch it</th><th>Why it matters</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>.pyc caching</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: Python saves its compiled bytecode to disk so it doesn't have to redo the tokenize→parse→compile work next time it imports the same file.</span></td>
+        <td>Docker image builds. <code>__pycache__</code> is just a folder Python creates next to your source files to hold these cached <code>.pyc</code> files. If your Dockerfile copies source code in a way that doesn't refresh this folder, a container can end up running <em>old</em> compiled bytecode even though the <code>.py</code> source on disk looks updated.</td>
+        <td>"Cold-start latency" means: how long a freshly started container takes before it's ready to serve its first request. Skipping tokenize/parse/compile on every import after the first run is exactly what makes that startup faster — but only if the cache is trustworthy.</td>
+      </tr>
+      <tr>
+        <td><strong>Frame objects</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: a frame is the VM's record of "which function is running, on which line, with which local variables" for one function call.</span></td>
+        <td>Every error log entry FastAPI prints when something crashes — that block of text showing file names, line numbers, and a chain of function calls — is called a <strong>traceback</strong>. It's literally a list of frame objects, one per function call, from where the crash happened all the way back to where the request started.</td>
+        <td><code>pdb</code> (Python's built-in interactive debugger) and the <code>traceback</code> module both work by walking this same chain of frames. Once you know a frame is just "one function call's snapshot," a scary-looking traceback becomes a readable list: function A called function B called function C, and C is where it broke.</td>
+      </tr>
+      <tr>
+        <td><strong>Bytecode inspection</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: printing out the exact low-level instructions the compiler generated for a function, so you can see what it really does instead of guessing.</span></td>
+        <td><code>dis</code> is a built-in module; <code>dis.dis(my_function)</code> prints that function's bytecode. Run it on a function you're about to optimize, <em>before</em> you change anything.</td>
+        <td>It turns a guess into a fact. "This rewrite feels faster" is a guess; "this rewrite emits 3 fewer instructions per loop iteration" is something you can actually check in seconds with <code>dis</code>, instead of trusting a hunch about readability.</td>
+      </tr>
+      <tr>
+        <td><strong>Object allocation cost</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: creating any Python value — even a small one — costs real time and memory, because it means allocating a new object on the heap (see Lesson 17's object-model section above).</span></td>
+        <td><strong>Pydantic</strong> is the validation library FastAPI uses to check that incoming request data (and outgoing response data) matches the shape you declared. Every time a request comes in, Pydantic builds a full model instance — one object per field, plus validation logic running for each one.</td>
+        <td>This is why "just add request validation" is not a free abstraction — a profiler (a tool that measures where a program actually spends its time) will show real CPU time spent inside Pydantic on every single request, because every field access and every validator is genuine object creation and function-call work, not something that happens "for free" at compile time.</td>
+      </tr>
+      <tr>
+        <td><strong>Import system</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: every time your code says <code>import something</code>, Python runs that module's file through the full tokenize→parse→compile→execute pipeline — but only the very first time; after that it reuses the result.</span></td>
+        <td>When a FastAPI app starts up, every <code>import</code> statement across your whole codebase runs once. The result of each import gets stored in <code>sys.modules</code> — a dictionary, built into every running Python program, that acts as a cache of "modules already imported." The next time anything asks for that same module, Python just hands back the cached version instead of re-running the whole pipeline.</td>
+        <td>A codebase with a lot of heavy dependencies means a lot of modules to compile and run before the app can accept its first request — that's startup time you pay once, up front. "Lazy imports" means moving an <code>import</code> statement from the top of a file into the specific function that needs it, so that dependency is only loaded (and only costs time) if that function actually gets called — sometimes worth doing for a rarely-used, heavy dependency.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    <p style="margin-top:0"><strong>In plain words first:</strong> <strong>LangGraph</strong> is a library for building an AI agent as a graph of steps — each step is called a <strong>node</strong>, and a <strong>graph executor</strong> is the code that calls each node function in the right order, threading a shared "state" object through them. Strip away the framework naming, and a node is nothing more than <em>a Python function that gets called</em> — so it goes through the exact same tokenize→AST→bytecode→frame pipeline as any other function call in this lesson.</p>
+    <p>The part worth getting precisely right — including where a common mental model overshoots — is <em>how a node's return value actually updates that state</em>. The idiomatic pattern is: a node does not receive the state, mutate it, and hand the same object back. It receives the current state and returns a small dict containing <strong>only the keys it's changing</strong> — a partial update, not the whole state. The executor then merges that partial dict into the shared state, one key at a time, using whatever <strong>reducer</strong> is declared for each key:</p>
+    <ul>
+      <li><strong>No reducer declared (the default)</strong> — the value a node returns for that key <em>replaces</em> whatever was there. This is a plain overwrite, not an append.</li>
+      <li><strong>A reducer declared</strong> (e.g. a message-history field annotated <code>Annotated[list, add_messages]</code>) — the returned value is <em>merged/appended</em> according to that reducer's logic instead of replacing the field outright.</li>
+    </ul>
+    <p>So "the node returns a dict and it gets appended to state" is correct for the classic example — conversation history is almost always a reducer-annotated field, specifically so each node's new message accumulates instead of erasing the transcript so far. But it's a property of that field's declared reducer, not a universal rule: a plain field with no reducer gets overwritten by whatever a node returns for it, every time.</p>
+    <p>Where the object-model connection from this lesson still matters: the state object a node receives genuinely is a live Python object — the same <code>PyObject</code>, same heap allocation, same refcount bookkeeping as anything else in this lesson — <em>not</em> a fresh deep copy manufactured for each node call. But the idiomatic contract is that a node <strong>reads</strong> from it and <strong>returns updates</strong>, rather than mutating it directly and handing the same object back:</p>
+    <pre>def node_one(state: dict) -> dict:
+    return {"intent": "objection"}   # a partial update, not the whole state
+
+# The executor merges this into shared state:
+#   - "intent" has no reducer declared  -> overwritten with "objection"
+#   - "messages" has add_messages       -> new message appended, not replaced</pre>
+    <p>Mutating the input dict in place instead (<code>state["intent"] = "objection"; return state</code>) is technically possible, purely because Python hands every node a reference to the same shared object rather than a copy — but it's an anti-pattern in LangGraph specifically, because it bypasses the reducer/merge logic entirely, which is also what LangGraph's checkpointing (persisting state between steps, for replay/resumption) and parallel-branch execution rely on to track what changed. The bug this actually causes in practice isn't "node 2 sees a surprise mutation" — it's simpler and more common: forgetting to declare a reducer on a field you meant to accumulate (like history or collected evidence), so each node's return value silently <em>overwrites</em> the previous one instead of building on it.</p>
+  </div>
+
+  <h2>The Complete Mental Model: Frames, Exceptions &amp; the Traceback Walk</h2>
+  <p>The "Frame objects" row above says a traceback is "a chain of frame objects." Here's that idea made concrete, end to end, using applyGOAT's own login path: a request calls <code>login()</code>, which calls <code>authenticate()</code>, which calls <code>load_user()</code> — and <code>load_user()</code> fails.</p>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">One call chain, traced from the first function call to the printed traceback</div>
+    <pre class="mermaid">
+graph TD
+    A["Python starts handling the request"] --> B["Creates Frame(main)"]
+    B --> C["Calls login()"]
+    C --> D["Creates Frame(login)"]
+    D --> E["Calls authenticate()"]
+    E --> F["Creates Frame(authenticate)"]
+    F --> G["Calls load_user()"]
+    G --> H["Creates Frame(load_user)"]
+    H --> I["Exception occurs<br/>(e.g. ImportError, KeyError)"]
+    I --> J["Exception object created"]
+    J --> K["Exception's __traceback__<br/>points to Frame(load_user)"]
+    K --> L["Frame(load_user) points back<br/>to its caller, Frame(authenticate)"]
+    L --> M["Frame(authenticate) points back<br/>to its caller, Frame(login)"]
+    M --> N["Frame(login) points back<br/>to its caller, Frame(main)"]
+    N --> O["Python walks this chain backward,<br/>frame by frame"]
+    O --> P["Formats and prints the traceback"]
+    style H fill:#fecaca,stroke:#dc2626
+    style P fill:#dbeafe,stroke:#2563eb
+    </pre>
+  </div>
+
+  <p>Every arrow in that diagram is a real object reference, not a metaphor. Each <code>Frame(...)</code> box is an actual frame object, created the instant its function is called and holding that function's locals, its position in the bytecode, and — critically — a pointer back to <em>the frame that called it</em>. When <code>load_user()</code> raises, the exception object Python constructs carries a <code>__traceback__</code> attribute pointing at the frame where the failure happened. From there, walking "backward" is just following each frame's caller-pointer: <code>load_user</code> → <code>authenticate</code> → <code>login</code> → the request handler that started it all. The traceback printer does nothing more than walk that chain once and print each frame's file, line number, and function name, innermost or outermost first depending on Python version.</p>
+
+  <p>Once you see a traceback this way, it stops being a wall of text and becomes a narrative you already know how to read: <em>"the request handler called <code>login</code>, which called <code>authenticate</code>, which called <code>load_user</code>, and <code>load_user</code> is where it broke."</em> Every extra frame in a long traceback is just one more "called by" step in that same sentence — nothing about it is special-cased or hidden from you; it's the exact same frame-chaining this lesson's execution-model pipeline builds on every single call, just captured and printed at the one moment things went wrong.</p>
+
+  <div class="callout">
+    <span class="callout-label">Why this matters in practice</span>
+    In a FastAPI error log, the traceback for a failed <code>/login</code> request in applyGOAT is this exact chain, just with real file paths and line numbers instead of function names alone. Reading from the bottom of the traceback up tells you <em>where</em> it failed (<code>load_user</code>, last frame); reading from the top down tells you <em>how execution got there</em> (the request handler → <code>login</code> → <code>authenticate</code>). Debugging is faster once you stop reading a traceback top-to-bottom as undifferentiated text and instead ask "which frame is the failure, and what's the calling chain that reached it?"
+  </div>
+
+  <h2>The Object Model: refcounting, small-int caching, string interning</h2>
+  <p><strong>In plain words first:</strong> every single value in Python — a number, a string, a list, your own class instances — is stored the same way underneath: as a <code>PyObject</code>, a chunk of memory on the <strong>heap</strong> (the pool of memory the program can allocate from as needed, as opposed to the fixed, function-call-scoped <strong>stack</strong>). Every <code>PyObject</code> carries two things at minimum: a <strong>type pointer</strong> (which says "I am an int" / "I am a string" / etc.) and a <strong>reference count</strong> — a running total of how many places in the program currently have a name pointing at this exact object.</p>
+
+  <p>That reference count (<strong>refcount</strong> for short) is the whole mechanism. <code>a = b = "hello"</code> does <em>not</em> create two separate strings — both names <code>a</code> and <code>b</code> point at the one string object in memory, and its refcount becomes 2. When a name is reassigned to something else, or the function it lived in returns, that refcount goes down by one. The moment a refcount hits zero — nobody, anywhere, still has a name pointing at it — Python frees that memory <em>immediately</em>, on the spot. This is different from languages that only use a "tracing garbage collector" (a background process that periodically scans all memory looking for anything nobody references anymore) — Python's refcounting means most memory is freed the instant it's no longer needed, not on some later sweep.</p>
+
+  <p>Two real optimizations are built on top of this basic mechanism:</p>
+  <ul>
+    <li><strong>Small integer caching.</strong> CPython pre-creates one shared object for every integer from −5 to 256 and reuses it everywhere, instead of creating a fresh object each time. So <code>a = 100; b = 100; a is b</code> is <code>True</code> — <code>a</code> and <code>b</code> really are the same object in memory. But <code>a = 1000; b = 1000; a is b</code> is usually <code>False</code> — outside that small cached range, each <code>1000</code> becomes its own separate heap object, even though they're equal in value. (<code>is</code> asks "are these the exact same object in memory?" — a much stricter question than <code>==</code>, which asks "do these have the same value?" This gap is exactly why relying on <code>is</code> to compare numbers is a bug waiting to happen — always use <code>==</code> for values, and save <code>is</code> for checks like <code>is None</code>.)</li>
+    <li><strong>String interning.</strong> Any string literal that looks like it could be an identifier (a variable or function name — no spaces, no punctuation) gets deduplicated into one shared object at compile time, the same way small integers are shared. The payoff: comparing two interned strings can often be answered with a quick "are these the same memory address?" check (a <strong>pointer comparison</strong> — comparing two addresses, which is nearly free) before ever falling back to comparing the strings character by character.</li>
+  </ul>
+
+  <pre>a = 100
+b = 100
+print(a is b)          # True — guaranteed. Both land in the -5..256 cache,
+                        # so a and b are provably the same object, every time.
+
+a = 1000
+b = 1000
+print(a is b)           # Usually False at the top level of a script/module —
+                        # 1000 is outside the cache, so each literal typically
+                        # becomes its own separate heap object.
+
+def same_block():
+    a = 1000
+    b = 1000
+    return a is b
+
+print(same_block())     # Often True! Both 1000 literals appear together inside
+                         # one function body, and CPython's compiler can fold
+                         # identical constants within a single code object into
+                         # one shared value — a compiler optimization, not a
+                         # language guarantee.</pre>
+  <p>This is the actual, honest answer to "what does <code>a = 1000; b = 1000; print(a is b)</code> print?" — <strong>it depends</strong>, and you should never bank on either outcome. Whether the two <code>1000</code> literals get folded into one shared object depends on implementation details like where in the code they appear (same function vs. separate top-level statements vs. the interactive REPL), which CPython version you're running, and whether the compiler's constant-folding pass happens to notice they're identical. None of that is part of the language specification — it's an optimization detail that's free to change. The only line that's ever safe to write is the one that asks the actual question you mean: <code>a == b</code> for "do these have the same value," never <code>a is b</code> for numbers. Save <code>is</code> for singleton checks like <code>x is None</code>, where there is genuinely only one such object in the entire running program by design.</p>
+
+  <pre>a = "hello"
+b = "hello"
+a is b            # True  — both identifier-shaped literals, interned to the same object
+
+c = "hello world"
+d = "hello world"
+c is d            # Usually False — contains a space, not identifier-shaped, so it isn't
+                   # auto-interned; two separate heap objects that happen to be equal
+
+e = "".join(["hel", "lo"])   # built at runtime, not a literal the compiler ever saw
+e is a             # False — even though e == "hello", it was never deduplicated
+                   # against the interned "hello" object created for `a`
+
+import sys
+f = sys.intern("hel" + "lo")   # force interning by hand at runtime
+f is a             # True — sys.intern() looks up (or registers) the shared object,
+                   # so a runtime-built string can be made to match the cache too</pre>
+  <p>Notice the shape of the trap: <code>a is b</code> being <code>True</code> for two identical short literals is a genuine memory optimization, not a language guarantee — it works because both literals happened to be compiled together and both look like identifiers. The moment a string is built at runtime (concatenation, formatting, reading from a file or a request body), it isn't interned automatically, and <code>is</code> silently starts returning <code>False</code> for values that are still equal. This is exactly the small-integer trap from the bullet above, wearing a string costume: <code>==</code> is the only correct tool for comparing string <em>values</em>; <code>is</code> only tells you whether two names happen to point at the interpreter's one cached copy.</p>
+
+  <p>Refcounting has one real blind spot: <strong>cyclic garbage</strong> — object A holds a reference to object B, and B holds a reference back to A. Even if nothing else in the whole program points at either one, each object's refcount is still 1 (from the other), so neither ever reaches zero, and refcounting alone would leak that memory forever. This is exactly why CPython also ships a second, separate mechanism: the <strong>generational garbage collector</strong> (the <code>gc</code> module) — a background process that periodically scans specifically for these reference cycles and breaks them. It's a backstop for the one case plain refcounting can't handle, not a replacement for it. Concretely:</p>
+  <pre>class Node:
+    def __init__(self):
+        self.parent = None
+        self.children = []
+
+root = Node()
+child = Node()
+root.children.append(child)   # root --> child
+child.parent = root           # child --> root : a reference cycle
+
+del root
+del child
+# Neither object's refcount ever hits zero — each still holds one
+# reference from the other. Only the generational GC's cycle
+# detector will eventually notice both are unreachable and free them.</pre>
+  <p>Circular references between ORM (Object-Relational Mapping — the layer, like SQLAlchemy, that represents database rows as Python objects) model instances and their own cached relationships are the most common place this bites production backend code: a parent row object referencing its children, and each child referencing its parent right back.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Preview — forward reference</span>
+    Refcounting has a second, sharper consequence beyond memory management: it's the reason CPython needs the <strong>Global Interpreter Lock (GIL)</strong> at all. Incrementing or decrementing a refcount has to happen <strong>atomically</strong> — meaning it can never be half-done and interrupted, even when multiple threads are running — because two threads changing the same object's refcount at the same moment could corrupt it. Rather than adding a separate lock to every single object in the entire program, CPython uses one single global lock around bytecode execution to guarantee this safety. That trade-off — one lock, simple and fast, but no true multi-core parallelism for Python code — is the subject of the next lesson.
+  </div>
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"Is Python compiled or interpreted?"</div>
+          <div class="playbook-q-probe">Follow-up: "Then what's in a .pyc file, and why doesn't it make Python 'compiled' in the C sense?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Both, depending on what you mean by 'compiled.' CPython compiles source to bytecode — an intermediate, platform-independent instruction set — via tokenizing, parsing to an AST, then a compiler pass. That bytecode is then interpreted by the Python Virtual Machine, a stack-based bytecode interpreter written in C. So there's no interpretation of raw source text at runtime, but there's also no compilation to native machine code — the VM decodes and dispatches each bytecode instruction on every execution. That's the meaningful distinction from a fully interpreted language (re-parsing text each run) and from an ahead-of-time compiled language like C (producing native instructions)."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">".pyc files hold the compiled bytecode plus a header (magic number, source hash/mtime) so the import system can skip tokenizing/parsing/compiling on subsequent imports if the source hasn't changed. It's not compiled in the C sense because it's not native machine code — it's still an abstract instruction set that the PVM interprets at every run. Deleting <code>__pycache__</code> costs you re-compilation time on next import, not correctness — the .py source is still the source of truth."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied</div>
+          <div class="playbook-q-text">"A teammate says wrapping a hot loop in a list comprehension instead of a for-loop 'is always faster.' How would you verify that?"</div>
+          <div class="playbook-q-probe">Follow-up: "What would make the list comprehension slower despite fewer bytecode instructions?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"I wouldn't take it on faith — I'd run <code>dis.dis()</code> on both versions and compare the emitted bytecode, then benchmark with <code>timeit</code> on representative data. List comprehensions typically compile to a specialized <code>LIST_APPEND</code> loop with less per-iteration overhead than an explicit <code>for</code> loop calling <code>.append()</code> as a method lookup each time — that's a real, measurable difference in instruction count per iteration, not folklore. But 'always faster' is the part I'd push back on: it depends on what's inside the loop."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"If the loop body does something with side effects beyond building a list — writing to a database, logging, mutating shared state — you can't express it as a comprehension without contorting the code, and forcing it often makes it both slower and unreadable. Also, if the loop body dominates the cost (an API call, a regex match), the fixed per-iteration bytecode savings of a comprehension are noise next to the actual work — dis and timeit both, never just one, because instruction count and wall-clock time can diverge once I/O or C-extension calls dominate."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"What's a frame object, and why do you see it in every traceback?"</div>
+          <div class="playbook-q-probe">Follow-up: "What happens to a frame's local variables after the function returns — are they immediately freed?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"A frame is the PVM's per-call execution context — an operand stack for intermediate values, a locals array/dict, a reference to the code object being executed, and an instruction pointer tracking which bytecode instruction runs next. Every function call, comprehension, and generator resumption creates or reuses a frame. A traceback is literally a linked chain of frames from the exception site back to the entry point — each line in a traceback is one frame's file, line number, and function name at the moment the exception propagated through it."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Usually yes, immediately — when a function returns, its frame's reference to each local goes away, and if that was the only reference (the common case for locals that don't escape via closure or return value), the object's refcount hits zero and it's freed right there, deterministically, no GC pause required. The exception is anything that outlives the frame: values returned to the caller, values captured by a closure, or values referenced by a generator that's paused mid-execution — a generator's frame is kept alive between <code>yield</code>s specifically so its locals survive across resumptions."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong><a href="https://devguide.python.org/internals/compiler/" target="_blank">CPython Developer's Guide — Compiler design</a></strong><br>
+    The authoritative source on the tokenize→AST→bytecode pipeline, written by the people who maintain it.
+  </p>
+  <p>
+    <strong><a href="https://docs.python.org/3/library/dis.html" target="_blank">dis — Python bytecode disassembler (docs.python.org)</a></strong><br>
+    Run this on your own functions today — 10 minutes with <code>dis</code> makes the whole lesson concrete instead of abstract.
+  </p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0016-dynamic-programming.html">Lesson 16 — Dynamic Programming Patterns</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0018-concurrency-models.html">Lesson 18 — Concurrency Models: Threads, Processes, the GIL &amp; AsyncIO</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to run <code>dis</code> on one of applyGOAT's actual scoring functions together? Curious how comprehensions, generators, or decorators change the bytecode shape? Not sure how the compiler decides between <code>LOAD_FAST</code> and <code>LOAD_GLOBAL</code>?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 17 &nbsp;·&nbsp; Python Execution Model &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "What are the six stages between a .py source file and a running program in CPython?",
+    options: [
+      "Tokenizer → Parser (AST) → Compiler → bytecode/.pyc cache → PVM → object model",
+      "Lexer → Linker → Assembler → Machine code → CPU → registers",
+      "Parser → Interpreter → Garbage Collector → Output",
+      "Source → JIT compiler → native code → CPU"
+    ],
+    answer: 0,
+    explanation: "CPython tokenizes source into a token stream, parses tokens into an AST, compiles the AST to bytecode (cached as .pyc), then the PVM's ceval.c loop executes that bytecode against frame objects, operating on refcounted PyObject values."
+  },
+  {
+    q: "Why doesn't a .pyc file make CPython 'compiled' in the same sense as C?",
+    options: [
+      "Because .pyc files are encrypted and unreadable",
+      "Because bytecode is still an abstract instruction set interpreted by the PVM at runtime, not native machine code executed directly by the CPU",
+      "Because .pyc files are regenerated on every single run regardless of caching",
+      "Because Python has no compiler at all"
+    ],
+    answer: 1,
+    explanation: "The .pyc cache skips tokenizing/parsing/compiling on re-import, but the bytecode inside still requires the PVM to decode and dispatch each instruction at runtime — unlike ahead-of-time compilation to native CPU instructions."
+  },
+  {
+    q: "a = 1000; b = 1000; print(a is b) often prints False, but a = 100; b = 100; print(a is b) prints True. Why?",
+    options: [
+      "Python caches small integers (-5 to 256) as shared singleton objects; larger integers are allocated as distinct heap objects even when equal in value",
+      "is always returns False for numbers above 999",
+      "This is a bug in CPython that was fixed in Python 3.12",
+      "Integers above 256 are stored as strings internally"
+    ],
+    answer: 0,
+    explanation: "CPython pre-allocates and reuses integer objects in the range -5 to 256 as an optimization. Outside that range, each integer literal typically creates a new object, so `is` (identity) can return False even though `==` (value equality) is True. Never use `is` for value comparison."
+  },
+  {
+    q: "A function's local variable holds the only reference to a large object. What happens to that object immediately after the function returns?",
+    options: [
+      "It stays in memory until the next scheduled garbage collection cycle",
+      "Its refcount drops to zero and it is freed immediately and deterministically, without waiting for a GC pass",
+      "It is automatically returned to the caller regardless of the return statement",
+      "It becomes part of the frame object permanently"
+    ],
+    answer: 1,
+    explanation: "CPython's primary memory management mechanism is reference counting. When a frame's reference to a local goes away and no other reference exists, the object's refcount hits zero and it is freed on the spot — deterministic, not dependent on the generational GC, which exists only to catch reference cycles."
+  },
+  {
+    q: "Why can't reference counting alone reclaim memory used by two objects that reference each other (a cycle), even if nothing external points to either?",
+    options: [
+      "Reference counting doesn't apply to objects created inside functions",
+      "Each object in the cycle still holds a nonzero refcount from the other object in the cycle, so neither refcount ever reaches zero on its own",
+      "CPython disables refcounting for any object with a __dict__",
+      "Cycles are automatically detected and prevented at object creation time"
+    ],
+    answer: 1,
+    explanation: "If A references B and B references A, each has a refcount of at least 1 from the other, even when no external reference remains. This is exactly why CPython adds a separate generational garbage collector (the `gc` module) to detect and break cycles refcounting alone can never resolve."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA, '0017');
+</script>
+
+<script>
+const LESSON_ID = '0017';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

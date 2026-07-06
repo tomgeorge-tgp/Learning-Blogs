@@ -3,15 +3,19 @@
  *
  * Usage:
  *   <div id="quiz"></div>
+ *   <script src="../assets/engine.js"></script>
  *   <script src="../assets/quiz.js"></script>
- *   <script>initQuiz('quiz', QUIZ_DATA)</script>
+ *   <script>initQuiz('quiz', QUIZ_DATA, '0001')</script>
  *
  * QUIZ_DATA format:
  *   [{ q: "Question text", options: ["A", "B", "C", "D"], answer: 1, explanation: "Why B is correct" }]
  *   answer is 0-indexed.
+ *
+ * The optional third argument (lessonId) connects the quiz to the LearningEngine:
+ * results are persisted, XP is awarded, and the next spaced-repetition review is scheduled.
  */
 
-function initQuiz(containerId, data) {
+function initQuiz(containerId, data, lessonId) {
   const container = document.getElementById(containerId);
   if (!container) return;
 
@@ -81,19 +85,36 @@ function initQuiz(containerId, data) {
 
   function showScore() {
     const pct = Math.round((score / data.length) * 100);
-    let msg, cls;
-    if (pct === 100) { msg = "Perfect — you have this cold."; cls = "success"; }
-    else if (pct >= 70) { msg = "Solid. Review the ones you missed."; cls = "warning"; }
-    else { msg = "Gaps found. Re-read the lesson, then retry."; cls = ""; }
+    let msg;
+    if (pct === 100) { msg = "Perfect! 🎯"; }
+    else if (pct >= 70) { msg = "Solid work 💪"; }
+    else { msg = "Keep going 🔄"; }
+
+    // Persist the result via the LearningEngine (if present) — awards XP and
+    // schedules the next spaced-repetition review with SM-2.
+    let engineLines = '';
+    if (lessonId && window.LearningEngine) {
+      const result = LearningEngine.recordQuizResult(lessonId, score, data.length);
+      engineLines += `<div class="quiz-xp-line">+${result.xpGained} XP earned</div>`;
+      engineLines += `<div class="quiz-review-line">Next review in ${result.nextReviewDays} day${result.nextReviewDays === 1 ? '' : 's'}</div>`;
+      if (result.newAchievements && result.newAchievements.length > 0) {
+        engineLines += `<div class="quiz-xp-line">🏆 Achievement unlocked: ${result.newAchievements.map(a => a.label).join(', ')}</div>`;
+      }
+    }
 
     container.innerHTML = `
       <div class="quiz-score show">
         <div style="font-size:2.5rem;margin-bottom:0.5rem">${pct}%</div>
         <div style="font-size:1rem;font-weight:400;color:var(--muted)">${score}/${data.length} correct</div>
         <div style="margin-top:0.75rem;font-size:0.9rem">${msg}</div>
-        <button class="btn btn-secondary" style="margin-top:1rem" onclick="initQuiz('${containerId}', ${JSON.stringify(data).replace(/"/g, '&quot;')})">Retry quiz</button>
+        ${engineLines}
+        <button class="btn btn-secondary" style="margin-top:1rem" id="${containerId}-retry">Retry quiz</button>
       </div>
     `;
+
+    document.getElementById(`${containerId}-retry`).addEventListener('click', () => {
+      initQuiz(containerId, data, lessonId);
+    });
   }
 
   render();

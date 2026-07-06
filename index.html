@@ -6,33 +6,8 @@
   <title>Tom George — Engineer Curriculum</title>
   <link rel="stylesheet" href="assets/style.css">
   <style>
-    .curriculum-hero {
-      border-bottom: 2px solid var(--text);
-      padding-bottom: 1.5rem;
-      margin-bottom: 2.5rem;
-    }
-    .curriculum-title {
-      font-size: 2rem;
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      line-height: 1.2;
-      margin-bottom: 0.4rem;
-    }
-    .curriculum-sub {
-      font-family: var(--font-ui);
-      font-size: 0.88rem;
-      color: var(--muted);
-    }
-    .progress-line {
-      font-family: var(--font-ui);
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      margin-bottom: 0.75rem;
-    }
-
-    .pillar-section { margin-bottom: 3rem; }
+    /* Dashboard page overrides */
+    body { padding: 0; }
 
     .pillar-heading {
       font-family: var(--font-ui);
@@ -46,6 +21,7 @@
       margin-bottom: 1.25rem;
     }
 
+    .pillar-section { margin-bottom: 3rem; }
     .topic-group { margin-bottom: 2rem; }
 
     .topic-label {
@@ -156,208 +132,246 @@
       color: var(--muted);
       margin-left: 0.5rem;
     }
-
-    .stats-row {
-      display: flex;
-      gap: 1.5rem;
-      margin-top: 0.75rem;
-      flex-wrap: wrap;
-    }
-    .stat {
-      font-family: var(--font-ui);
-      font-size: 0.78rem;
-      color: var(--muted);
-    }
-    .stat strong {
-      color: var(--text);
-      font-size: 1.05rem;
-      display: block;
-      line-height: 1.2;
-    }
+    .view-heading { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.6rem; }
+    .view-desc { font-family: var(--font-ui); font-size: 0.88rem; color: var(--muted); margin-bottom: 1.75rem; }
   </style>
 </head>
 <body>
-<div class="page">
+<div class="dashboard-layout">
 
-  <header class="curriculum-hero">
-    <div class="progress-line">Tom George &nbsp;·&nbsp; 2026</div>
-    <h1 class="curriculum-title">Engineer Curriculum</h1>
-    <p class="curriculum-sub">Targeting senior / staff engineer roles — structured depth over breadth.</p>
-    <div class="stats-row">
-      <div class="stat"><strong>10</strong> lessons complete</div>
-      <div class="stat"><strong>1</strong> pillar active</div>
-      <div class="stat"><strong>Database</strong> fully covered</div>
-    </div>
-  </header>
-
-
-  <!-- ── PILLAR 1 ─────────────────────────────── -->
-  <section class="pillar-section">
-    <div class="pillar-heading">Pillar 1 &nbsp;·&nbsp; Architect Knowledge</div>
-
-    <!-- Distributed Systems -->
-    <div class="topic-group">
-      <div class="topic-label">Distributed Systems</div>
-
-      <a class="lesson-card" href="lessons/0001-cap-theorem.html">
-        <span class="lesson-num">01</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">CAP Theorem &amp; Consistency Models</div>
-          <div class="lesson-card-sub">The trade-off that governs every database in your stack.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-    </div>
-
-    <!-- Database -->
-    <div class="topic-group">
-      <div class="topic-label">Database</div>
-
-      <a class="lesson-card" href="lessons/0002-database-indexing.html">
-        <span class="lesson-num">02</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Database Indexing &amp; Internals</div>
-          <div class="lesson-card-sub">Why queries are slow, how indexes fix it — B-trees, composite indexes, partial indexes.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0003-database-scaling.html">
-        <span class="lesson-num">03</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Database Scaling</div>
-          <div class="lesson-card-sub">Replicas, caching, sharding, consensus — how Instagram, Discord and Google broke every ceiling.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0004-sql-fundamentals.html">
-        <span class="lesson-num">04</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">SQL Fundamentals &amp; Query Anatomy</div>
-          <div class="lesson-card-sub">Execution order, JOINs, window functions, CTEs — the shape of every SQL query.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0005-query-execution.html">
-        <span class="lesson-num">05</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Query Execution &amp; the Query Planner</div>
-          <div class="lesson-card-sub">What happens between typing a query and getting a result — scan strategies, join strategies, EXPLAIN ANALYZE.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0006-query-optimization.html">
-        <span class="lesson-num">06</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Query Optimization</div>
-          <div class="lesson-card-sub">N+1, bad pagination, function-on-column, covering indexes — the patterns that kill performance and the rewrites that fix them.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0007-normalization.html">
-        <span class="lesson-num">07</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Database Normalization</div>
-          <div class="lesson-card-sub">Why bad table design causes data corruption by design — 1NF through BCNF, the three anomalies.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0008-database-internals.html">
-        <span class="lesson-num">08</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Database Internals</div>
-          <div class="lesson-card-sub">MVCC, WAL, VACUUM, isolation levels — how PostgreSQL actually guarantees ACID.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0009-nosql.html">
-        <span class="lesson-num">09</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">NoSQL Databases</div>
-          <div class="lesson-card-sub">MongoDB, Redis, Cassandra — what each is for, how data is modeled, when to reach for each.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-
-      <a class="lesson-card" href="lessons/0010-vector-databases.html">
-        <span class="lesson-num">10</span>
-        <div class="lesson-card-body">
-          <div class="lesson-card-title">Vector Databases</div>
-          <div class="lesson-card-sub">Embeddings, ANN search, HNSW, IVF, pgvector vs Pinecone — the infrastructure behind every RAG pipeline.</div>
-        </div>
-        <span class="lesson-arrow">→</span>
-      </a>
-    </div>
-  </section>
-
-
-  <!-- ── PILLAR 2 ─────────────────────────────── -->
-  <section class="pillar-section">
-    <div class="pillar-heading">Pillar 2 &nbsp;·&nbsp; System Design <span class="coming-badge">Coming soon</span></div>
-
-    <div class="topic-group">
-      <div class="topic-label">Core Patterns</div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">11</span>
-        <span class="coming-soon-label">Rate Limiting, Load Balancing &amp; API Gateway Patterns</span>
-      </div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">12</span>
-        <span class="coming-soon-label">Message Queues, Event Streaming &amp; Kafka</span>
-      </div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">13</span>
-        <span class="coming-soon-label">Caching Strategies — CDN, Reverse Proxy, Application Cache</span>
+  <!-- ── SIDEBAR ─────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div style="display:flex;align-items:center;gap:0.75rem">
+      <div class="avatar-circle">TG</div>
+      <div>
+        <div style="font-family:var(--font-ui);font-weight:700;color:#f9fafb;font-size:0.95rem">Tom George</div>
+        <div class="level-badge" id="level-badge">Level 1</div>
       </div>
     </div>
 
-    <div class="topic-group">
-      <div class="topic-label">Design Problems</div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">14</span>
-        <span class="coming-soon-label">Design a URL Shortener</span>
+    <div class="xp-bar-wrap">
+      <div class="xp-bar-label">
+        <span id="xp-label">0 XP</span>
+        <span id="xp-next-label">200 XP to next</span>
       </div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">15</span>
-        <span class="coming-soon-label">Design a Notification System</span>
-      </div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">16</span>
-        <span class="coming-soon-label">Design a Feed / Timeline System</span>
-      </div>
+      <div class="xp-bar"><div class="xp-fill" id="xp-fill" style="width:0%"></div></div>
     </div>
-  </section>
 
+    <div class="streak-badge" id="streak-badge">🔥 <span class="streak-count">0</span> day streak</div>
 
-  <!-- ── PILLAR 3 ─────────────────────────────── -->
-  <section class="pillar-section">
-    <div class="pillar-heading">Pillar 3 &nbsp;·&nbsp; Engineering Execution <span class="coming-badge">Coming soon</span></div>
-
-    <div class="topic-group">
-      <div class="topic-label">Infrastructure &amp; Reliability</div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">17</span>
-        <span class="coming-soon-label">Docker, Kubernetes &amp; Container Orchestration</span>
-      </div>
-      <div class="coming-soon-card">
-        <span class="lesson-num">18</span>
-        <span class="coming-soon-label">Observability — Metrics, Logging, Tracing</span>
-      </div>
+    <div class="sidebar-card" id="mission-card">
+      <div class="sidebar-card-label">Today's Mission</div>
+      <div class="sidebar-card-title" id="mission-title">Loading...</div>
+      <div class="sidebar-card-sub" id="mission-sub"></div>
+      <div class="sidebar-card-xp" id="mission-xp"></div>
     </div>
-  </section>
 
+    <div class="sidebar-card" id="review-card" style="display:none">
+      <div class="sidebar-card-label">Review Queue</div>
+      <div class="sidebar-card-title" id="review-title"></div>
+      <div class="sidebar-card-sub" id="review-sub"></div>
+    </div>
 
-  <hr>
-  <div style="font-family:var(--font-ui);font-size:0.82rem;color:var(--muted)">
-    Tom George Learning System &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; Built with Claude Code
-  </div>
+    <div class="sidebar-stats">
+      <div class="sidebar-stat"><strong id="stat-lessons">0</strong><span>Lessons</span></div>
+      <div class="sidebar-stat"><strong id="stat-xp">0</strong><span>XP</span></div>
+      <div class="sidebar-stat"><strong id="stat-streak">0</strong><span>Streak</span></div>
+    </div>
+  </aside>
 
+  <!-- ── MAIN CONTENT ─────────────────────────── -->
+  <main class="main-content">
+    <header style="border-bottom:2px solid var(--text);padding-bottom:1.5rem;margin-bottom:2.5rem">
+      <div style="font-family:var(--font-ui);font-size:0.75rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:0.4rem">2026 Curriculum</div>
+      <h1 style="font-size:2rem;font-weight:700;letter-spacing:-0.03em;line-height:1.2;margin-bottom:0.4rem">Engineer Curriculum</h1>
+      <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted)">Targeting senior / staff engineer roles — structured depth over breadth.</p>
+    </header>
+
+    <div id="content-view"><!-- rendered by renderView() below --></div>
+
+    <hr>
+    <div style="font-family:var(--font-ui);font-size:0.82rem;color:var(--muted)">
+      Tom George Learning System &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; Built with Claude Code
+    </div>
+  </main>
 </div>
+
+<script src="assets/engine.js"></script>
+<script>
+(function() {
+  const E = window.LearningEngine;
+  if (!E) return;
+
+  /* ---------- sidebar (identity / XP / streak / mission / review / stats) ---------- */
+
+  function renderSidebar() {
+    const li = E.getLevelInfo();
+    document.getElementById('level-badge').textContent = 'Level ' + li.level;
+    document.getElementById('xp-label').textContent = li.xp + ' XP';
+    document.getElementById('xp-next-label').textContent = (li.xpForNext - li.xp) + ' to Level ' + (li.level + 1);
+    document.getElementById('xp-fill').style.width = (li.xpProgress * 100) + '%';
+
+    const streak = E.getStreak();
+    document.getElementById('streak-badge').innerHTML = '🔥 <span class="streak-count">' + streak.count + '</span> day streak';
+    document.getElementById('stat-lessons').textContent = Object.values(E.getState().lessons).filter(l => l.read).length;
+    document.getElementById('stat-xp').textContent = li.xp;
+    document.getElementById('stat-streak').textContent = streak.count;
+
+    const mission = E.getTodaysMission();
+    if (mission) {
+      document.getElementById('mission-title').textContent = mission.title;
+      document.getElementById('mission-sub').textContent = mission.description;
+      document.getElementById('mission-xp').textContent = mission.xpReward > 0 ? '+' + mission.xpReward + ' XP' : '';
+      if (mission.lessonId) {
+        const meta = E.getLessonMeta(mission.lessonId);
+        if (meta) {
+          const card = document.getElementById('mission-card');
+          card.style.cursor = 'pointer';
+          card.onclick = () => { window.location.href = meta.file; };
+        }
+      }
+    }
+
+    const due = E.getDueForReview();
+    if (due.length > 0) {
+      document.getElementById('review-card').style.display = 'block';
+      document.getElementById('review-title').textContent = due.length + ' lesson' + (due.length > 1 ? 's' : '') + ' due for review';
+      document.getElementById('review-sub').textContent = 'Spaced repetition keeps knowledge fresh.';
+    }
+  }
+
+  /* ---------- category drill-down (hash-routed) ---------- */
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function lessonCardHtml(lesson) {
+    let cls = 'lesson-card' + (lesson.read ? ' completed' : '');
+    let reviewBadge = lesson.reviewDue ? '<span class="review-badge">Review</span>' : '';
+    return '<a class="' + cls + '" href="' + lesson.file + '">' +
+      '<span class="lesson-num">' + lesson.num + '</span>' +
+      '<div class="lesson-card-body">' +
+        '<div class="lesson-card-title">' + escapeHtml(lesson.title) + reviewBadge + '</div>' +
+        '<div class="lesson-card-sub">' + escapeHtml(lesson.subtitle || '') + '</div>' +
+      '</div>' +
+      '<span class="lesson-arrow">→</span>' +
+    '</a>';
+  }
+
+  function breadcrumb(crumbs) {
+    // crumbs: [{label, hash}] — last one has no hash (current page)
+    return '<div class="breadcrumb-nav">' + crumbs.map((c, i) => {
+      const sep = i > 0 ? '<span class="crumb-sep">/</span>' : '';
+      if (c.hash !== undefined) return sep + '<a href="' + c.hash + '">' + escapeHtml(c.label) + '</a>';
+      return sep + '<span class="crumb-current">' + escapeHtml(c.label) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function renderCategoryGrid(curriculum) {
+    const cards = curriculum.map(cat => {
+      const totalLessons = cat.subcategories.reduce((s, sc) => s + sc.lessons.length + sc.comingSoonLessons.length, 0);
+      const readLessons = cat.subcategories.reduce((s, sc) => s + sc.lessons.filter(l => l.read).length, 0);
+      const progress = cat.comingSoon ? 'Coming soon' : readLessons + ' / ' + totalLessons + ' lessons';
+      const inner =
+        '<div class="category-card-icon">' + cat.icon + '</div>' +
+        '<div class="category-card-label">' + escapeHtml(cat.label) + (cat.comingSoon ? '<span class="coming-badge">Coming soon</span>' : '') + '</div>' +
+        '<div class="category-card-desc">' + escapeHtml(cat.description) + '</div>' +
+        '<div class="category-card-progress">' + progress + '</div>';
+      return cat.comingSoon
+        ? '<div class="category-card coming-soon">' + inner + '</div>'
+        : '<a class="category-card" href="#cat/' + cat.id + '">' + inner + '</a>';
+    }).join('');
+
+    return breadcrumb([{ label: 'Curriculum' }]) +
+      '<div class="category-grid">' + cards + '</div>' +
+      '<section class="pillar-section" style="margin-top:2.5rem">' +
+        '<div class="pillar-heading">Achievements</div>' +
+        '<div class="achievements-grid" id="achievements-grid"></div>' +
+      '</section>';
+  }
+
+  function renderSubcategoryGrid(cat) {
+    const cards = cat.subcategories.map(sub => {
+      const count = sub.lessons.length + sub.comingSoonLessons.length;
+      const readCount = sub.lessons.filter(l => l.read).length;
+      if (cat.comingSoon || sub.lessons.length === 0) {
+        return '<div class="subcategory-card" style="opacity:0.6;cursor:default">' +
+          '<div class="subcategory-card-label">' + escapeHtml(sub.label) + '</div>' +
+          '<div class="subcategory-card-count">' + count + ' topic' + (count === 1 ? '' : 's') + ' planned</div>' +
+        '</div>';
+      }
+      return '<a class="subcategory-card" href="#cat/' + cat.id + '/' + sub.id + '">' +
+        '<div class="subcategory-card-label">' + escapeHtml(sub.label) + '</div>' +
+        '<div class="subcategory-card-desc">' + escapeHtml(sub.description) + '</div>' +
+        '<div class="subcategory-card-count">' + readCount + ' / ' + count + ' read</div>' +
+      '</a>';
+    }).join('');
+
+    return breadcrumb([{ label: 'Curriculum', hash: '#' }, { label: cat.label }]) +
+      '<div class="view-heading">' + cat.icon + ' ' + escapeHtml(cat.label) + '</div>' +
+      '<div class="view-desc">' + escapeHtml(cat.description) + '</div>' +
+      '<div class="subcategory-grid">' + cards + '</div>';
+  }
+
+  function renderLessonList(cat, sub) {
+    let body = '';
+    if (sub.lessons.length > 0) {
+      body += '<div class="topic-group">' + sub.lessons.map(lessonCardHtml).join('') + '</div>';
+    }
+    if (sub.comingSoonLessons.length > 0) {
+      body += '<div class="topic-group">' + sub.comingSoonLessons.map((label, i) =>
+        '<div class="coming-soon-card"><span class="lesson-num">' + (sub.lessons.length + i + 1) + '</span><span class="coming-soon-label">' + escapeHtml(label) + '</span></div>'
+      ).join('') + '</div>';
+    }
+    return breadcrumb([{ label: 'Curriculum', hash: '#' }, { label: cat.label, hash: '#cat/' + cat.id }, { label: sub.label }]) +
+      '<div class="view-heading">' + escapeHtml(sub.label) + '</div>' +
+      (sub.description ? '<div class="view-desc">' + escapeHtml(sub.description) + '</div>' : '') +
+      body;
+  }
+
+  function renderAchievements() {
+    const grid = document.getElementById('achievements-grid');
+    if (!grid || !E.getAchievementDefs) return;
+    E.getAchievementDefs().forEach(a => {
+      const el = document.createElement('div');
+      el.className = 'achievement-card ' + (a.earned ? 'earned' : 'locked');
+      el.innerHTML =
+        '<div class="ach-icon">' + a.icon + '</div>' +
+        '<div class="ach-label">' + a.label + '</div>' +
+        '<div class="ach-desc">' + a.description + '</div>';
+      grid.appendChild(el);
+    });
+  }
+
+  function renderView() {
+    const parts = location.hash.replace(/^#/, '').split('/').filter(Boolean); // ['cat', catId, subId?]
+    const curriculum = E.getCurriculum();
+    const container = document.getElementById('content-view');
+    let html;
+
+    if (parts[0] === 'cat' && parts[1]) {
+      const cat = curriculum.find(c => c.id === parts[1]);
+      if (cat) {
+        if (parts[2]) {
+          const sub = cat.subcategories.find(s => s.id === parts[2]);
+          if (sub) {
+            html = renderLessonList(cat, sub);
+          }
+        }
+        if (!html) html = renderSubcategoryGrid(cat);
+      }
+    }
+    if (!html) html = renderCategoryGrid(curriculum);
+
+    container.innerHTML = html;
+    if (parts.length === 0) renderAchievements();
+  }
+
+  renderSidebar();
+  renderView();
+  window.addEventListener('hashchange', renderView);
+})();
+</script>
 </body>
 </html>

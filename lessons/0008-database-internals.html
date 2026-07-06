@@ -25,12 +25,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 8 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:40%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 08</div>
-    <div class="pillar-badge">Database Internals</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Storage Engine Internals &nbsp;·&nbsp; Lesson 08</div>
+    <div class="pillar-badge">Storage Engine Internals</div>
     <h1 class="lesson-title">Database Internals</h1>
     <p class="lesson-subtitle">MVCC, WAL, VACUUM, isolation levels — how PostgreSQL actually guarantees the ACID properties your application relies on.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>ACID — The Contract</h2>
@@ -101,6 +117,30 @@ TXN 100: reads 'Tom' until it commits or rolls back</div>
     Long-running transactions in applyGOAT (e.g. a data export that takes 5 minutes) hold a snapshot. All the row versions that were visible when it started are kept alive — even if newer transactions have replaced them. This causes <strong>table bloat</strong>. Keep transactions short. Don't hold transactions open across HTTP requests or AI generation calls.
   </div>
 
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">MVCC in Action — Two Concurrent Transactions, Then VACUUM</div>
+    <pre class="mermaid">
+sequenceDiagram
+    participant Tx1 as Tx1 (writer)
+    participant Heap as users heap page (id=1)
+    participant Tx2 as Tx2 (reader)
+    participant VAC as Autovacuum
+    Tx1->>Heap: BEGIN
+    Tx2->>Heap: BEGIN (takes consistent snapshot)
+    Tx1->>Heap: "UPDATE name='Thomas' WHERE id=1"
+    Heap-->>Heap: "old version xmax=101 (dead)<br/>new version xmin=101"
+    Tx2->>Heap: "SELECT name WHERE id=1"
+    Heap-->>Tx2: "'Tom' -- Tx1's write is uncommitted,<br/>not visible to Tx2's snapshot"
+    Tx1->>Heap: COMMIT
+    Tx2->>Heap: "SELECT name WHERE id=1 (same txn)"
+    Heap-->>Tx2: "'Tom' -- still Tx2's original snapshot"
+    Tx2->>Heap: COMMIT
+    Note over Heap: Old row version now dead to every future transaction
+    VAC->>Heap: VACUUM users
+    Heap-->>VAC: "dead tuple (xmax=101) reclaimed,<br/>space marked reusable"
+    </pre>
+  </div>
+
 
   <h2>WAL — Write-Ahead Log (Durability + Replication)</h2>
   <p>The WAL is the mechanism behind both Atomicity and Durability. The rule is simple: <strong>write to the WAL before writing to the actual data files.</strong></p>
@@ -123,6 +163,20 @@ SELECT
   replay_lsn,
   (sent_lsn - replay_lsn) AS replication_lag_bytes
 FROM pg_stat_replication;</code></pre>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">The WAL Write Path</div>
+    <pre class="mermaid">
+graph TD
+    A["Client issues INSERT/UPDATE/DELETE"] --> B["Change record written to WAL buffer"]
+    B --> C["fsync: WAL flushed to disk"]
+    C --> D["Commit acknowledged to client"]
+    D --> E["Data pages updated in shared_buffers<br/>(can happen before or after the fsync)"]
+    E --> F["Checkpoint: dirty pages flushed to data files,<br/>WAL segments before the checkpoint can be recycled"]
+    style C fill:#dcfce7,stroke:#16a34a
+    style D fill:#dbeafe,stroke:#2563eb
+    </pre>
+  </div>
 
 
   <h2>Transaction Isolation Levels</h2>
@@ -217,6 +271,11 @@ UPDATE accounts SET balance = balance - 100 WHERE id = 1;
 COMMIT;</code></pre>
 
   <p><code>FOR UPDATE</code> is the standard pattern for "read-then-update" operations where correctness depends on the value you read still being current when you write. Without it, two concurrent transactions could both read the same balance and each subtract from it, resulting in a total subtraction of only one of the amounts.</p>
+
+  <div class="callout success">
+    <span class="callout-label">Cross-project check — eBider</span>
+    eBider's concurrent bidding is the textbook <code>FOR UPDATE</code> scenario, live: two bidders raise the same auction row within milliseconds of each other. At READ COMMITTED with no explicit lock, both requests can <code>SELECT</code> the current high bid, both compute "my bid is higher," and both <code>UPDATE</code> — the second write simply overwrites the first, silently discarding a valid accepted bid. This is MVCC's <strong>write-write</strong> conflict path, not its read-write path, so isolation level alone doesn't save you: REPEATABLE READ would only guarantee your own transaction sees a stable snapshot, it wouldn't stop two transactions from each thinking they won. Wrapping the read-check-write in <code>SELECT current_bid FROM auctions WHERE id = $1 FOR UPDATE</code> serializes the two bids — whichever transaction acquires the row lock first proceeds, the second blocks until the first commits, then re-reads the now-current high bid and correctly rejects or re-evaluates its own offer.
+  </div>
 
   <h3>FOR UPDATE vs FOR SHARE</h3>
   <table>
@@ -463,6 +522,13 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -522,7 +588,79 @@ const QUIZ_DATA = [
     explanation: "VACUUM: reclaims dead tuple space within the existing table file (marks it reusable), no exclusive lock, safe to run on live tables. VACUUM FULL: rewrites the entire table into a new file — actually shrinks the physical file on disk. Requires an exclusive lock, blocking all reads and writes during the operation. Use VACUUM FULL rarely, in maintenance windows, only when table bloat is severe and disk space is critical."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0008');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0008';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

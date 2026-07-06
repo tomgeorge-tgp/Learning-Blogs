@@ -35,12 +35,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 10 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:50%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 10</div>
-    <div class="pillar-badge">Vector Databases</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Beyond Relational &nbsp;·&nbsp; Lesson 10</div>
+    <div class="pillar-badge">Beyond Relational</div>
     <h1 class="lesson-title">Vector Databases</h1>
     <p class="lesson-subtitle">Embeddings, ANN search, HNSW, IVF — the infrastructure behind every RAG pipeline you build.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>What is an Embedding?</h2>
@@ -93,6 +109,28 @@ Similarity measure: cosine similarity
       </tr>
     </tbody>
   </table>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">The ANN Search Flow</div>
+    <pre class="mermaid">
+graph TD
+    A["Query text"] --> B["Embed query<br/>(Azure OpenAI text-embedding-3-small)"]
+    B --> C["Query vector (1536 floats)"]
+    C --> D["HNSW graph traversal<br/>(greedy descent, top layer to Layer 0)"]
+    D --> E["Top-k approximate nearest neighbors<br/>ranked by cosine similarity"]
+    E --> F{"Optional rerank step?"}
+    F -->|"Yes"| G["Cross-encoder or LLM rerank on top-k<br/>(higher precision, higher cost)"]
+    F -->|"No"| H["Top-k chunks passed directly<br/>into LLM prompt context"]
+    G --> H
+    style D fill:#dbeafe,stroke:#2563eb
+    style E fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <div class="callout success">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    The AI Sales Agent's RAG step over insurance policy documents is where the optional rerank branch above earns its cost. Policy language is dense and adversarial to raw cosine similarity — two clauses can be lexically close but legally opposite (an inclusion vs. an explicit exclusion for the same peril). Pulling <code>top_k=20</code> candidates from Pinecone via HNSW is cheap, but shipping all 20 straight into the prompt wastes context and dilutes precision. Adding a lightweight cross-encoder rerank over those 20 — scoring the query against each candidate directly, rather than via vector proximity — before keeping the top 5 for the prompt is the difference between "semantically nearby" and "actually answers the question." applyGOAT's resume matching doesn't need this: match-quality tolerance is looser, so raw top-k straight into the prompt (as in the ingestion/query pipeline below) is good enough.
+  </div>
 
 
   <h2>Why Not a B-Tree for Vector Search?</h2>
@@ -362,6 +400,23 @@ WHERE  tenant_id = 'goat-001'
 ORDER BY embedding <=> $1
 LIMIT 10;</code></pre>
 
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Same Question, Two Architectures</div>
+    <pre class="mermaid">
+graph TD
+    subgraph PG["pgvector -- in Postgres"]
+    A1["Application"] --> B1["PostgreSQL<br/>relational tables + vector column<br/>same transaction, ACID"]
+    end
+    subgraph PC["Pinecone -- managed, separate service"]
+    A2["Application"] --> B2["PostgreSQL<br/>relational data"]
+    A2 --> C2["Pinecone<br/>vectors, separate service<br/>eventual consistency"]
+    end
+    style B1 fill:#dcfce7,stroke:#16a34a
+    style B2 fill:#dbeafe,stroke:#2563eb
+    style C2 fill:#dbeafe,stroke:#2563eb
+    </pre>
+  </div>
+
   <h3>Pinecone vs pgvector — when to use each</h3>
   <table>
     <thead>
@@ -544,6 +599,7 @@ LIMIT 10;</code></pre>
   <hr>
   <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
     <strong>Previous:</strong> <a href="0009-nosql.html">Lesson 09 — NoSQL Databases</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0011-algorithmic-complexity.html">Lesson 11 — Big-O &amp; Algorithmic Complexity Analysis</a> &nbsp;|&nbsp;
     <strong>Database series complete:</strong> <a href="0003-database-scaling.html">Lesson 03 — Database Scaling (the architecture layer)</a>
   </div>
 
@@ -569,6 +625,13 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -628,7 +691,79 @@ const QUIZ_DATA = [
     explanation: "pgvector handles 2M 1536-dim vectors comfortably on a good PostgreSQL instance (typically 8–16GB RAM). You get: SQL JOINs (filter by tenant_id, user_id in the same query), ACID (upserted chunks immediately queryable in the same transaction), and no extra managed service cost. Choose Pinecone when scale exceeds ~5M vectors, when managed infrastructure is worth the cost, or when you need native hybrid search. At 2M vectors, pgvector is the simpler, cheaper, more consistent choice."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0010');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0010';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

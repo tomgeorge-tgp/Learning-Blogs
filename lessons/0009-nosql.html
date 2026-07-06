@@ -30,12 +30,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 9 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:45%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 09</div>
-    <div class="pillar-badge">NoSQL</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Beyond Relational &nbsp;·&nbsp; Lesson 09</div>
+    <div class="pillar-badge">Beyond Relational</div>
     <h1 class="lesson-title">NoSQL Databases</h1>
     <p class="lesson-subtitle">MongoDB, Redis, Cassandra — what each is for, how data is modeled, and when to reach for each over PostgreSQL.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>Why NoSQL Exists</h2>
@@ -50,6 +66,27 @@
   <div class="callout warning">
     <span class="callout-label">The right framing</span>
     NoSQL is not "better than SQL." PostgreSQL with JSONB handles semi-structured data. PostgreSQL with proper indexing handles most scale scenarios. Choose NoSQL when a specific database's model is a materially better fit for your access pattern — not because it's fashionable or "scales better."
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Choosing a Store By Access Pattern</div>
+    <pre class="mermaid">
+graph TD
+    A["What's your access pattern?"] --> B{"Sub-millisecond lookups?<br/>Ephemeral or TTL'd data?"}
+    B -->|"Yes"| C["Redis<br/>key-value, in-memory"]
+    B -->|"No"| D{"Documents vary in shape?<br/>Moderate query complexity?"}
+    D -->|"Yes"| E["MongoDB<br/>flexible document schema"]
+    D -->|"No"| F{"Very high write throughput?<br/>Massive scale, time-series or event data?"}
+    F -->|"Yes"| G["Cassandra<br/>wide-column, distributed writes"]
+    F -->|"No"| H["PostgreSQL<br/>relational is still the right default"]
+    C --> C1["e.g. session tokens, rate-limit counters,<br/>leaderboards"]
+    E --> E1["e.g. flexible product/document storage,<br/>rapid schema evolution"]
+    G --> G1["e.g. write-heavy event logs, time-series,<br/>chat message history at scale"]
+    style C fill:#fee2e2,stroke:#dc2626
+    style E fill:#dcfce7,stroke:#16a34a
+    style G fill:#fef3c7,stroke:#d97706
+    style H fill:#dbeafe,stroke:#2563eb
+    </pre>
   </div>
 
 
@@ -393,6 +430,11 @@ WHERE channel_id = ? LIMIT 100;</code></pre>
     </tbody>
   </table>
 
+  <div class="callout">
+    <span class="callout-label">Cross-project check — Mini Hermes Agent</span>
+    Mini Hermes's persistent memory layer is a good self-test for this whole decision tree. The agent's long-term memory records are heterogeneous by nature — a "learned fact," a "tool-call outcome," and a "user preference" all have different shapes, and new memory kinds get added as the agent evolves — so a rigid relational schema fights you on every addition. That's the MongoDB branch: flexible document schema, no migration required to introduce a new memory type. Layer a Redis tier on top for the agent's active working-memory window — the last N turns and any short-TTL scratch state a single reasoning loop needs at sub-millisecond latency. Two different access patterns inside one agent, two different NoSQL choices — exactly the "name the constraint, name the fit" discipline this decision tree is testing for.
+  </div>
+
 
   <h2>Interview Playbook</h2>
   <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click to reveal answers.</p>
@@ -519,6 +561,13 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -578,7 +627,79 @@ const QUIZ_DATA = [
     explanation: "AOF logs every write command. With appendfsync=everysec, you lose at most 1 second of writes on crash. With appendfsync=always, near-zero data loss (every write fsynced). RDB takes periodic snapshots — you may lose minutes of writes. Trade-off: AOF files are larger (full command log vs compact snapshot) and restart requires replaying the entire log. RDB + AOF combined: use AOF for durability, RDB for fast restart."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0009');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0009';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

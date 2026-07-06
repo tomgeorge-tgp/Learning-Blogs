@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 11 — Big-O & Algorithmic Complexity Analysis</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 11 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:55%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Data Structures &amp; Algorithms &nbsp;›&nbsp; Algorithmic Complexity &nbsp;·&nbsp; Lesson 11</div>
+    <div class="pillar-badge">Algorithmic Complexity</div>
+    <h1 class="lesson-title">Big-O &amp; Algorithmic<br>Complexity Analysis</h1>
+    <p class="lesson-subtitle">The vocabulary for talking about performance — time/space complexity, amortized analysis, and "can you do better?"</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definitions</h2>
+  <p>Asymptotic notation describes how an algorithm's resource usage <strong>grows as input size grows</strong>, ignoring constant factors and lower-order terms. <code>f(n) = O(g(n))</code> means: beyond some input size n₀, f(n) is bounded above by c·g(n) for some constant c. That's it — an <strong>upper bound on growth rate</strong>, nothing about actual wall-clock time.</p>
+
+  <table>
+    <thead>
+      <tr><th>Notation</th><th>What it bounds</th><th>Formal meaning</th><th>Plain reading</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Big-O</strong> — O(g(n))</td>
+        <td>Upper bound</td>
+        <td>f(n) ≤ c·g(n) for all n ≥ n₀</td>
+        <td>"Grows <em>no faster than</em> g(n)"</td>
+      </tr>
+      <tr>
+        <td><strong>Big-Ω</strong> — Ω(g(n))</td>
+        <td>Lower bound</td>
+        <td>f(n) ≥ c·g(n) for all n ≥ n₀</td>
+        <td>"Grows <em>at least as fast as</em> g(n)"</td>
+      </tr>
+      <tr>
+        <td><strong>Big-Θ</strong> — Θ(g(n))</td>
+        <td>Tight bound</td>
+        <td>Both O(g(n)) and Ω(g(n))</td>
+        <td>"Grows <em>exactly like</em> g(n)"</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Two subtleties senior candidates get right:</p>
+  <ul>
+    <li><strong>O/Ω/Θ are bounds on functions; worst/best/average are cases of the algorithm.</strong> They're orthogonal axes. You can give a Big-O of the best case or a Big-Ω of the worst case. Quicksort's worst case is Θ(n²); its average case is Θ(n log n). Saying "quicksort is O(n²)" and "quicksort is O(n log n) on average" are both correct statements about different cases.</li>
+    <li><strong>Interviews say "Big-O" but mean "tight bound on the worst case" (technically Θ).</strong> Pedantically, an O(n) algorithm is also O(n²) and O(2ⁿ) — upper bounds aren't unique. Nobody wants that answer. When asked "what's the complexity?", give the tightest worst-case bound, and explicitly flag when average and worst diverge (hash tables, quicksort).</li>
+  </ul>
+
+  <p>Because constants and lower-order terms are dropped: <code>3n² + 40n + 7 → O(n²)</code>, and <code>O(2n) = O(n)</code>. But constants are dropped <em>only in the notation</em> — a 10× constant factor is invisible to Big-O and very visible in production. Big-O tells you how the curve bends, not where it sits.</p>
+
+  <h3>The complexity ladder — with the interview gut-check</h3>
+  <p>Rule of thumb: modern hardware executes on the order of <strong>10⁸ simple operations per second</strong>. Given an input size constraint, you can infer the complexity class you need <em>before writing any code</em> — say this reasoning out loud in interviews; it's exactly what they're probing.</p>
+
+  <table>
+    <thead>
+      <tr><th>Class</th><th>Name</th><th>Canonical example</th><th>Max n in ~1 second</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>O(1)</td><td>Constant</td><td>Array index, hash insert, stack push</td><td>Any n</td></tr>
+      <tr><td>O(log n)</td><td>Logarithmic</td><td>Binary search, balanced-tree lookup</td><td>Effectively any n (log₂ 10¹⁸ ≈ 60)</td></tr>
+      <tr><td>O(n)</td><td>Linear</td><td>Single scan, max/sum of array</td><td>~10⁸</td></tr>
+      <tr><td>O(n log n)</td><td>Linearithmic</td><td>Merge sort, heap sort, sort-then-sweep</td><td>~10⁶–10⁷</td></tr>
+      <tr><td>O(n²)</td><td>Quadratic</td><td>All pairs, nested loops over same input</td><td>~10⁴</td></tr>
+      <tr><td>O(2ⁿ)</td><td>Exponential</td><td>All subsets, naive recursion with 2 branches</td><td>~25</td></tr>
+      <tr><td>O(n!)</td><td>Factorial</td><td>All permutations, brute-force TSP</td><td>~11</td></tr>
+    </tbody>
+  </table>
+
+  <p>So: the problem says n ≤ 10⁵? An O(n²) solution is 10¹⁰ operations — minutes, not seconds. You need O(n log n) or better, which immediately suggests sorting, heaps, binary search, or a hash-based single pass. This constraint-to-approach inference is the highest-leverage 15 seconds of any coding interview.</p>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Deriving complexity from code structure — a decision aid</div>
+    <pre class="mermaid">
+graph TD
+    A["Read the loop / recursion structure"] --> B{"Fixed number of ops,<br/>no loops or recursion?"}
+    B -->|"Yes"| C["O(1)"]
+    B -->|"No"| D{"Single loop over the input?"}
+    D -->|"Index steps by a constant"| E["O(n) × cost of loop body<br/>body O(1) → O(n)<br/>body O(n) scan → O(n²)"]
+    D -->|"Index halves or doubles<br/>each iteration"| F["O(log n)"]
+    D -->|"No single loop"| G{"Nested loops?"}
+    G -->|"Both over the same input n"| H["O(n²) — even if inner<br/>starts at i (n²/2 → drop constant)"]
+    G -->|"Over different inputs n and m"| I["O(n·m) — keep BOTH variables"]
+    G -->|"No"| J{"Recursion?"}
+    J -->|"One call per level,<br/>input shrinks by 1"| K["O(n) time, O(n) stack"]
+    J -->|"Two+ calls per level,<br/>input shrinks by 1"| L["O(branchesᵈᵉᵖᵗʰ) — e.g. O(2ⁿ)"]
+    J -->|"Divide &amp; conquer:<br/>a·T(n/b) + f(n)"| M["Master Theorem<br/>(below)"]
+    </pre>
+  </div>
+
+  <h2>How You Actually Derive It — Counting Operations</h2>
+  <p>Complexity analysis is just counting how many times the innermost work executes, as a function of input size. Work up the ladder:</p>
+
+  <p><strong>Single pass — O(n) time, O(1) space.</strong> The loop body runs exactly n times, each iteration constant work:</p>
+  <pre>function maxOf(arr) {
+  let best = -Infinity;
+  for (const x of arr) if (x > best) best = x;  // runs n times, O(1) each
+  return best;                                   // total: O(n)
+}</pre>
+
+  <p><strong>Nested loop over the same input — O(n²).</strong> The inner loop starting at <code>i + 1</code> doesn't save you: total iterations are (n−1) + (n−2) + … + 1 = n(n−1)/2. Drop the constant ½ and the −n term: O(n²).</p>
+  <pre>function hasDuplicatePair(arr) {
+  for (let i = 0; i < arr.length; i++)
+    for (let j = i + 1; j < arr.length; j++)   // n(n-1)/2 total iterations
+      if (arr[i] === arr[j]) return true;
+  return false;                                 // O(n²) time, O(1) space
+}</pre>
+
+  <p><strong>The loop body is not free — it multiplies.</strong> This is the single most common miscounting error. Swap the inner comparison scan for a hash set and the same shape becomes linear:</p>
+  <pre>function hasDuplicateHash(arr) {
+  const seen = new Set();
+  for (const x of arr) {
+    if (seen.has(x)) return true;  // O(1) average per lookup
+    seen.add(x);
+  }
+  return false;   // O(n) time — but now O(n) space. You traded space for time.
+}
+
+// Contrast: if the inner check were arr.includes(x) — an O(n) linear scan —
+// the "single loop" would secretly be O(n²). Loop count × body cost. Always.</pre>
+
+  <p><strong>Halving the input — O(log n).</strong> Binary search discards half the remaining range per iteration. How many times can you halve n before reaching 1? log₂ n. Any loop whose variable multiplies or divides by a constant each step is logarithmic.</p>
+
+  <p><strong>Recursion — write the recurrence.</strong> For recursive code, the question is: how many calls happen in total, and what does each call cost outside the recursion?</p>
+  <pre>function fib(n) {
+  if (n <= 1) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+// Recurrence: T(n) = T(n-1) + T(n-2) + O(1)
+// Two branches per level, depth ≈ n  →  O(2ⁿ) time.
+// Space: O(n) — the call STACK only holds one root-to-leaf path at a time.</pre>
+
+  <h3>Space complexity — the blind spot</h3>
+  <p>Every complexity answer has two halves. When you say "O(n) time", finish the sentence with space. Rules:</p>
+  <ul>
+    <li><strong>Count auxiliary space</strong> — extra memory beyond the input. A hash set built over the input is O(n) space; two pointer variables are O(1).</li>
+    <li><strong>Recursion depth is space.</strong> Each active call frame lives on the call stack. Naive <code>fib(n)</code> is O(2ⁿ) time but only O(n) space, because the stack holds at most one path from root to leaf — depth n — at any moment. A recursive traversal of a balanced tree is O(log n) stack space; of a degenerate (linked-list-shaped) tree, O(n). Interviewers ask this specifically because most candidates say "O(1), I allocated nothing."</li>
+    <li><strong>Sorting isn't free space-wise.</strong> Merge sort uses O(n) auxiliary; heap sort O(1); typical quicksort O(log n) expected stack. If you answer "sort it first", know what your language's sort costs.</li>
+  </ul>
+
+  <h3>Multiple inputs — O(n + m) vs O(n·m)</h3>
+  <p>If two independent input sizes exist, they must both appear in the answer. Comparing every element of list A (size n) against every element of list B (size m) is O(n·m) — collapsing that to "O(n²)" is wrong when n and m can differ by orders of magnitude, and collapsing it to "O(n)" is just false. Sequential passes add: one scan of each is O(n + m). Nested access multiplies: O(n·m). You may only merge variables when one provably dominates or they're guaranteed proportional.</p>
+
+  <h2>Complexity Classes You Already Use Daily</h2>
+  <table>
+    <thead>
+      <tr><th>Operation</th><th>Complexity</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Array index <code>arr[i]</code></td><td>O(1)</td><td>Base address + offset arithmetic</td></tr>
+      <tr><td>Hash map get/set</td><td>O(1) average, O(n) worst</td><td>Direct bucket via hash; degrades under pathological collisions</td></tr>
+      <tr><td>Binary search on sorted array</td><td>O(log n)</td><td>Halve the search range each step</td></tr>
+      <tr><td>B-tree index lookup (Postgres)</td><td>O(log n)</td><td>Tree height — the entire point of lesson 02</td></tr>
+      <tr><td>Full array scan / <code>includes</code> / full table scan</td><td>O(n)</td><td>Must touch every element</td></tr>
+      <tr><td>Comparison sort (<code>Array.sort</code>, ORDER BY without index)</td><td>O(n log n)</td><td>Provable lower bound for comparison-based sorting</td></tr>
+      <tr><td>All-pairs comparison, naive join</td><td>O(n²) / O(n·m)</td><td>Every element against every other</td></tr>
+      <tr><td>Dynamic array append (JS push, Python append)</td><td>O(1) amortized</td><td>Doubling strategy — next section</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    Your resume-to-job matching is a complexity problem you've already lived. Scoring r resumes against j jobs by comparing every pair is O(r·j) — and each comparison itself has a cost: cosine similarity over d-dimensional embeddings makes it O(r·j·d). Note that's <em>three</em> variables, not "O(n²)". This is also exactly the trade lesson 02 made for tables and lesson 10 made for vectors: a B-tree turns an O(n) scan into O(log n) per lookup, and HNSW turns an O(n·d) exhaustive vector scan into roughly O(log n · d) approximate search. "Add an index" is always the same move — spend O(n) space and build time to buy sublinear queries.
+  </div>
+
+  <h2>Amortized Analysis — Why "O(1) Amortized" Isn't Hand-Waving</h2>
+  <p>Some operations are cheap almost always and expensive rarely, on a fixed schedule. Amortized analysis averages cost over a <strong>worst-case sequence of operations</strong> — it's a guarantee about totals, not an optimistic average over lucky inputs. That distinction is what separates it from "average case".</p>
+
+  <p><strong>Worked example: dynamic array append with doubling.</strong> A JS array / Python list keeps spare capacity. Appending into spare capacity costs O(1). When capacity is full, allocate a new buffer of <em>double</em> the size and copy everything — that single append costs O(n).</p>
+
+  <pre>Appending n = 16 elements starting from capacity 1:
+
+append #:   1   2   3   4   5   6 7 8   9 ... 16
+copy cost:  -   1   2   -   4   - - -   8   -     ← copies at capacities 1,2,4,8
+write cost: 1   1   1   1   1   1 1 1   1 ... 1   ← n plain writes
+
+Total copies = 1 + 2 + 4 + 8 = 15 < 16 = n     (geometric series: Σ < n)
+Total work  = n writes + (&lt;n) copies < 3n  →  O(n) for n appends
+Per append  = O(n) / n = O(1) amortized</pre>
+
+  <p>The geometric series is the whole trick: because capacity <em>doubles</em>, each expensive copy pays for all the cheap appends since the previous copy. Grow by a constant amount instead (say +10 slots) and the copies sum to O(n²) — the schedule of expensive operations is what makes or breaks the bound. Hash table resizing follows the identical argument, which is why hash insert is O(1) amortized on top of O(1) average.</p>
+
+  <p><strong>The senior-level caveat:</strong> amortized O(1) still means <em>individual</em> operations occasionally cost O(n). In a latency-sensitive hot path (a p99 SLO, a real-time system), that one slow append is a spike, and you pre-size the array or pre-warm the table to avoid it. Amortized bounds protect throughput, not tail latency.</p>
+
+  <h2>The Master Theorem — Practical Version</h2>
+  <p>For divide-and-conquer recurrences of the form <strong>T(n) = a·T(n/b) + f(n)</strong> — "make a subproblems of size n/b, plus f(n) work to split/combine" — compare f(n) against the <strong>critical exponent</strong> n^(log_b a):</p>
+
+  <table>
+    <thead>
+      <tr><th>Case</th><th>Condition</th><th>Result</th><th>Intuition</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>f(n) grows <em>slower</em> than n^(log_b a)</td>
+        <td>T(n) = Θ(n^(log_b a))</td>
+        <td>The leaves dominate — recursion cost wins</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>f(n) ≈ n^(log_b a)</td>
+        <td>T(n) = Θ(n^(log_b a) · log n)</td>
+        <td>Every level costs the same — multiply by depth</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>f(n) grows <em>faster</em> than n^(log_b a)</td>
+        <td>T(n) = Θ(f(n))</td>
+        <td>The root dominates — combine cost wins</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><strong>Worked example — merge sort:</strong> T(n) = 2T(n/2) + O(n). Here a = 2, b = 2, so the critical exponent is n^(log₂ 2) = n¹. The combine work f(n) = n matches it exactly → <strong>Case 2</strong> → Θ(n log n). Sanity check without the theorem: each level of the recursion tree does n total merge work, and halving n to 1 gives log n levels — n work × log n levels.</p>
+
+  <p>Quick second read: binary search is T(n) = 1·T(n/2) + O(1); critical exponent n^(log₂ 1) = n⁰ = 1, f(n) = 1 matches → Case 2 → Θ(log n). For interviews you state the theorem and apply it; nobody asks you to prove it or to handle the regularity-condition edge cases.</p>
+
+  <h3>Common mistakes checklist</h3>
+  <table>
+    <thead>
+      <tr><th>Mistake</th><th>Correction</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>"Hash lookups are O(1), full stop"</td><td>O(1) <em>average</em>; O(n) worst case under adversarial collisions. Say both, then say why average is what matters here.</td></tr>
+      <tr><td>Giving time complexity only</td><td>Always state space too — including recursion stack depth.</td></tr>
+      <tr><td>"O(n)" when there are two inputs</td><td>O(n + m) or O(n·m). Keep every independent variable.</td></tr>
+      <tr><td>Ignoring the loop body's cost</td><td>Total = iteration count × body cost. An <code>includes()</code> inside a loop is quadratic.</td></tr>
+      <tr><td>Confusing amortized with average case</td><td>Amortized is a worst-case guarantee over a sequence; average case assumes an input distribution.</td></tr>
+      <tr><td>"Inner loop starts at i, so it's O(n log n)"</td><td>n(n−1)/2 is still Θ(n²). Halved constants don't change the class.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Interview reality check</span>
+    Interviewers don't award points for reciting definitions — they award points for <em>narrating the derivation</em>: "outer loop n, inner body does a hash lookup, O(1) average, so O(n) time and O(n) space for the set; the input constraint is 10⁵ so that comfortably fits." Practice saying the analysis while you code, not after being prompted. Being asked "and the complexity is…?" at the end means you already missed the signal.
+  </div>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Derive it live</div>
+          <div class="playbook-q-text">"This function sorts an array, then for each element does a binary search over the same array. Walk me through its time and space complexity."</div>
+          <div class="playbook-q-probe">Follow-up: "What if the binary search were replaced by <code>array.includes()</code>?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Two sequential phases, so costs add. The sort is O(n log n) — that's the comparison-sort floor. Then a loop running n times, where each iteration does an O(log n) binary search: n × log n = O(n log n). Total: O(n log n) + O(n log n) = O(n log n). Space: depends on the sort — if it's merge-sort-based like most standard library sorts, O(n) auxiliary; the loop itself adds O(1). So O(n log n) time, O(n) space. Notice the loop phase didn't change the class — when two phases add, the bigger one absorbs the other."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"<code>includes()</code> is a linear scan, O(n) per call. The loop becomes n × O(n) = O(n²), which now dominates the O(n log n) sort — total O(n²). Same code shape, one 'innocent' body swap, a whole complexity class worse. That's why I always price the loop body explicitly instead of treating library calls as free."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Amortized vs worst case</div>
+          <div class="playbook-q-text">"Appending to a dynamic array is 'O(1) amortized'. What does that actually guarantee, and how is it different from average case?"</div>
+          <div class="playbook-q-probe">Follow-up: "When would amortized O(1) not be good enough in a real system?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Amortized O(1) is a worst-case guarantee about a <em>sequence</em>: any n appends cost O(n) total, so O(1) per operation averaged over the sequence — no assumptions about lucky inputs. The mechanism is capacity doubling: a resize copies n elements, but the copies form a geometric series 1 + 2 + 4 + … &lt; n, so total work for n appends is under 3n. Average case is different — it averages over a <em>distribution of inputs</em>, like hash lookups being O(1) assuming keys spread evenly. Amortized needs no distribution; it's arithmetic over the operation schedule."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"When tail latency matters more than throughput. The individual resize is still O(n) — in a request hot path with a p99 SLO, that occasional spike is real. Mitigations: pre-size the collection when the size is known, or use an incremental-resize structure that spreads the copy across subsequent operations. Amortized bounds protect the aggregate, not the worst individual request."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — The two-variable gotcha</div>
+          <div class="playbook-q-text">"Is O(n + m) the same as O(n)? When does the distinction actually matter?"</div>
+          <div class="playbook-q-probe">Follow-up: "And O(n·m) vs O(n²)?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Not the same — n and m are independent variables, and you can only drop a term you can bound by another. If m can be arbitrarily larger than n, O(n + m) is dominated by m and calling it O(n) is simply wrong. It matters whenever the inputs scale independently: merging two lists, comparing a small query set against a large corpus, graph algorithms where V and E differ wildly — BFS is O(V + E), and on a sparse graph E ≈ V while on a dense one E ≈ V², so collapsing the variables loses exactly the information that matters. Only merge them if one provably dominates or they're guaranteed proportional."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Same principle, multiplicative version. O(n·m) says cost is the product of two independent sizes — 100 items against 10 million is 10⁹ operations, which O(n²) with n = 100 would wildly misstate. Writing O(n·m) also points at the right optimizations: shrink one factor (index the larger side for O(n log m)) or replace the pairing entirely (hash one side for O(n + m)). O(n²) hides that structure."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <h2>Primary Sources</h2>
+  <ul>
+    <li><strong>Introduction to Algorithms (CLRS), Chapter 3 — Growth of Functions</strong> — the canonical formal treatment of O/Ω/Θ; Chapter 4 covers the Master Theorem, Chapter 17 amortized analysis.</li>
+    <li><a href="https://en.wikipedia.org/wiki/Master_theorem_(analysis_of_algorithms)" target="_blank">Master theorem (analysis of algorithms) — Wikipedia</a> — the full statement including the regularity condition omitted here.</li>
+  </ul>
+
+  <h2>Navigation</h2>
+  <p>
+    <strong>Previous:</strong> <a href="0010-vector-databases.html">Lesson 10 — Vector Databases</a><br>
+    <strong>Next:</strong> <a href="0012-two-pointers.html">Lesson 12 — Two Pointers</a>
+  </p>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Still fuzzy on why naive Fibonacci is O(2ⁿ) time but only O(n) space? Or want to work through a Master Theorem Case 1 vs Case 3 example, since this lesson only walked Case 2?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 11 &nbsp;·&nbsp; Big-O &amp; Algorithmic Complexity Analysis &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "Formally, what does f(n) = O(g(n)) state?",
+    options: [
+      "f(n) grows at exactly the same rate as g(n) for large n",
+      "Beyond some n₀, f(n) is bounded above by c·g(n) for some constant c",
+      "f(n) is faster than g(n) in the average case",
+      "f(n) equals g(n) in the worst case"
+    ],
+    answer: 1,
+    explanation: "Big-O is an asymptotic UPPER bound only. The tight (exact-rate) bound is Θ; the lower bound is Ω. That's also why 'quicksort is O(n³)' is technically true but useless — interviews want the tightest worst-case bound."
+  },
+  {
+    q: "Naive recursive fib(n) makes two recursive calls per level. Its time and space complexities are:",
+    options: [
+      "O(2ⁿ) time, O(2ⁿ) space",
+      "O(n²) time, O(n) space",
+      "O(2ⁿ) time, O(n) space",
+      "O(n) time, O(1) space"
+    ],
+    answer: 2,
+    explanation: "Two branches per level with depth ≈ n gives O(2ⁿ) total calls. But the call stack only ever holds one root-to-leaf path at a time — depth n — so space is O(n). Stack depth, not total call count, determines recursion space."
+  },
+  {
+    q: "Why is dynamic-array append O(1) amortized rather than O(n)?",
+    options: [
+      "Because resizes are rare enough to ignore in practice",
+      "Because capacity doubling makes total copy work a geometric series bounded by n, so n appends cost O(n) total",
+      "Because on average, inputs don't trigger many resizes",
+      "Because the resize copy runs in the background"
+    ],
+    answer: 1,
+    explanation: "Copies happen at capacities 1, 2, 4, 8, … summing to less than n — so n appends do under 3n total work, O(1) each amortized. It's a worst-case guarantee over the sequence, not an assumption about inputs. Growing by a fixed increment instead of doubling would break it (O(n²) total)."
+  },
+  {
+    q: "Merge sort's recurrence is T(n) = 2T(n/2) + O(n). Applying the Master Theorem:",
+    options: [
+      "Case 1 — leaves dominate — Θ(n)",
+      "Case 2 — f(n) matches n^(log₂ 2) = n — Θ(n log n)",
+      "Case 3 — root dominates — Θ(n²)",
+      "The Master Theorem doesn't apply to merge sort"
+    ],
+    answer: 1,
+    explanation: "a = 2, b = 2, so the critical exponent is n^(log₂ 2) = n¹. The combine work f(n) = n matches it exactly, which is Case 2: multiply by the log n levels of the recursion tree → Θ(n log n)."
+  },
+  {
+    q: "A loop over n orders calls a function that linearly scans m products for each order. The time complexity is:",
+    options: [
+      "O(n), since there's only one loop in the code you wrote",
+      "O(n + m), because the two collections are processed",
+      "O(n·m), because total cost = iteration count × body cost, and the sizes are independent",
+      "O(n²), treating both collections as size n"
+    ],
+    answer: 2,
+    explanation: "The loop body costs O(m) and runs n times: O(n·m). Both variables stay in the answer because they're independent — collapsing to O(n) ignores the body, and O(n²) misstates the cost whenever n and m differ. Hashing the products first would make it O(n + m)."
+  }
+];
+initQuiz('quiz', QUIZ_DATA, '0011');
+</script>
+
+<script>
+const LESSON_ID = '0011';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

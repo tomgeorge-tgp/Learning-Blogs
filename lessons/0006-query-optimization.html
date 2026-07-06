@@ -20,12 +20,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 6 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:30%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 06</div>
-    <div class="pillar-badge">SQL</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Query Layer (SQL) &nbsp;·&nbsp; Lesson 06</div>
+    <div class="pillar-badge">Query Layer (SQL)</div>
     <h1 class="lesson-title">Query Optimization</h1>
     <p class="lesson-subtitle">The specific patterns that break indexes, create N+1 problems, and kill pagination — and the rewrites that fix them.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>Optimization #1 — Never Wrap Indexed Columns in Functions</h2>
@@ -132,6 +148,35 @@ users_with_apps = await db.fetch_all("""
   <div class="callout warning">
     <span class="callout-label">applyGOAT exposure</span>
     Any endpoint that returns a list of users with their applications or cover letters is a classic N+1 risk. In FastAPI with async SQLAlchemy or asyncpg, use <code>selectinload</code> for ORM, or write explicit JOIN queries. Log slow requests in production — N+1 usually looks like many fast queries, not one slow one, which is why it hides in p50 but kills p99 and total DB load.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">N+1 Pattern vs. Batched Rewrite</div>
+    <pre class="mermaid">
+graph TD
+    subgraph N1["N+1 pattern — one round trip per row"]
+    direction TB
+    A1["SELECT * FROM users<br/>(1 query, N rows returned)"] --> A2["for user in users:"]
+    A2 -->|"loop iteration 1"| A3["SELECT * FROM applications<br/>WHERE user_id = 1"]
+    A2 -->|"loop iteration 2"| A4["SELECT * FROM applications<br/>WHERE user_id = 2"]
+    A2 -->|"loop iteration N"| A5["SELECT * FROM applications<br/>WHERE user_id = N"]
+    A3 --> A6["Total: 1 + N queries<br/>N database round trips"]
+    A4 --> A6
+    A5 --> A6
+    end
+    subgraph BATCH["Batched rewrite — one round trip total"]
+    direction TB
+    B1["SELECT * FROM users<br/>WHERE tenant_id = ?"] --> B2["selectinload / JOIN:<br/>SELECT * FROM applications<br/>WHERE user_id IN (1,2,...,N)"]
+    B2 --> B3["Total: 1-2 queries<br/>regardless of N"]
+    end
+    style A6 fill:#fee2e2,stroke:#dc2626
+    style B3 fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    N+1 doesn't only show up in ORM loops over HTTP responses — it shows up inside LangGraph nodes too. A common shape in the AI Sales Agent: a retrieval node pulls back the top-k RAG chunks from Pinecone, then a post-processing step loops over each chunk and issues a separate PostgreSQL lookup to fetch the source document's metadata (policy number, underwriter, last-updated date) one chunk at a time before handing the enriched context to the next graph node. At k=10 that's 10 extra round trips added to every single conversation turn — latency the user feels directly, since the agent can't respond until every enrichment query returns. The fix is identical to the ORM case: collect all the document IDs from the retrieved chunks first, then issue one <code>WHERE id IN (...)</code> query (or a JOIN if the metadata lives relationally) before the node returns. Same anomaly, same fix, different framework — recognizing N+1 inside an agent pipeline instead of just inside a REST handler is the senior-level version of this pattern.
   </div>
 
   <h2>Optimization #4 — EXISTS vs IN vs JOIN (for filtering)</h2>
@@ -475,6 +520,13 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -534,7 +586,79 @@ const QUIZ_DATA = [
     explanation: "A partial index with WHERE status = 'open' indexes only 500K rows instead of 10M. It's 20x smaller, fits in cache, builds faster, and requires less maintenance on writes. The query planner uses it automatically when the query includes AND status = 'open'."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0006');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0006';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

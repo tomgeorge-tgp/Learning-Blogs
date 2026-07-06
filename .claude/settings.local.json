@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Select-String *)"
+      "PowerShell(Select-String *)",
+      "Bash(dir \"E:\\\\Learning\")",
+      "Bash(npx --yes playwright --version)",
+      "Bash(node -e \"require.resolve\\('playwright'\\)\")",
+      "Bash(npm root *)",
+      "Bash(pkill -f \"http.server 8123\")"
     ]
   }
 }

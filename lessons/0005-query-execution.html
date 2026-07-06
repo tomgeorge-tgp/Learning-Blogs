@@ -44,12 +44,28 @@
 
   <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
 
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 5 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:25%"></div>
+  </div>
 
   <header class="lesson-header">
-    <div class="lesson-meta">Pillar 1: Architect Knowledge &nbsp;·&nbsp; Lesson 05</div>
-    <div class="pillar-badge">Database Internals</div>
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Query Layer (SQL) &nbsp;·&nbsp; Lesson 05</div>
+    <div class="pillar-badge">Query Layer (SQL)</div>
     <h1 class="lesson-title">Query Execution<br>&amp; the Query Planner</h1>
     <p class="lesson-subtitle">What happens between typing a SQL query and receiving a result — and how to read the plan that decides it.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
   </header>
 
   <h2>The Query Lifecycle</h2>
@@ -174,6 +190,23 @@ Client receives 10 rows.</div>
   <div class="callout">
     <span class="callout-label">The key insight</span>
     You can't influence parsing or execution — those are fixed. Everything that matters for performance happens in the <strong>Plan</strong> step. Your indexes, table statistics, query shape, and join order all feed the planner's decision. When a query is slow, the question is always: "What did the planner choose and why?"
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">The Query Planner Pipeline</div>
+    <pre class="mermaid">
+graph TD
+    A["Raw SQL string"] --> B["Parse<br/>(tokenise, check grammar,<br/>build parse tree)"]
+    B --> C["Rewrite<br/>(validate against catalog,<br/>resolve names, expand views)"]
+    C --> D{"Plan<br/>generate candidate plans,<br/>estimate cost of each"}
+    D -->|"Option A: Seq scan + Hash join"| E["est. cost 892"]
+    D -->|"Option B: Index scan + Nested loop"| F["est. cost 340"]
+    D -->|"Option C: Seq scan + Merge join"| G["est. cost 610"]
+    F --> H["Cheapest plan wins<br/>→ handed to Executor"]
+    H --> I["Execute<br/>(Volcano/Iterator model —<br/>rows pulled node by node)"]
+    style F fill:#dcfce7,stroke:#16a34a
+    style H fill:#dcfce7,stroke:#16a34a
+    </pre>
   </div>
 
 
@@ -515,6 +548,11 @@ Execution Time: 18.451 ms</div>
     <li><strong>Sort node with large actual time:</strong> External sort (spilled to disk). Increase <code>work_mem</code> or provide the data pre-sorted via an index.</li>
   </ul>
 
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    The <code>tenant_id = 'goat-001'</code> query above is exactly the shape applyGOAT's candidate-matching endpoint runs constantly: filter by tenant, filter by a skill or recency predicate, sort, limit. The planner's decision between <code>Index Scan using idx_apps_tenant_date</code> and a full <code>Seq Scan on users</code> only goes the right way if a composite index exists with <strong>tenant_id first</strong> — multi-tenant tables are always filtered by tenant, so tenant_id belongs as the leading column of nearly every index on the table, otherwise every query silently degrades to scanning far more rows than it needs to as the tenant count grows. This is the first thing to check when an applyGOAT endpoint that felt fast in dev gets slow with real tenant volume: is tenant_id leading the index, or is the planner falling back to a scan because the composite key is in the wrong order.
+  </div>
+
 
   <h2>pg_stat_statements — Production Query Monitoring</h2>
   <p>The <code>pg_stat_statements</code> extension tracks cumulative statistics for every query shape executed on the server. This is the tool for finding slow queries in production without looking at individual EXPLAIN outputs.</p>
@@ -667,6 +705,13 @@ function togglePlaybook(trigger) {
   if (!isOpen) { trigger.classList.add('open'); body.classList.add('open'); }
 }
 </script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
 <script src="../assets/quiz.js"></script>
 <script>
 const QUIZ_DATA = [
@@ -726,7 +771,79 @@ const QUIZ_DATA = [
     explanation: "Optimize by total_exec_time first. Query 1: 10 × 500ms = 5,000ms total. Query 2: 10,000 × 2ms = 20,000ms total. Query 2 burns 4× more database time, even though it feels fast per call. pg_stat_statements ordered by total_exec_time shows you the actual resource consumers, not just the slow-feeling ones."
   }
 ];
-initQuiz('quiz', QUIZ_DATA);
+initQuiz('quiz', QUIZ_DATA, '0005');
 </script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0005';
+
+// If already read, show completed state in the mark-read bar
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+
+// Focus mode
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+
+// Pomodoro timer (25 min focus / 5 min break)
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
 </body>
 </html>

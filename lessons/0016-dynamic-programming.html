@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 16 — Dynamic Programming Patterns</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 16 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:80%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Data Structures &amp; Algorithms &nbsp;›&nbsp; Recursive &amp; Search Patterns &nbsp;·&nbsp; Lesson 16</div>
+    <div class="pillar-badge">Recursive & Search Patterns</div>
+    <h1 class="lesson-title">Dynamic Programming<br>Patterns</h1>
+    <p class="lesson-subtitle">Turning exponential recursion into polynomial time by remembering what you've already computed.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definition</h2>
+  <p>Dynamic programming applies when a problem has <strong>both</strong> of these properties — and only then:</p>
+  <ul>
+    <li><strong>Optimal substructure.</strong> The optimal solution to the whole problem can be assembled from optimal solutions to its subproblems. "Best way to reach step n" is built from "best way to reach step n−1" and "best way to reach step n−2" — you never need a <em>suboptimal</em> answer to a subproblem to build the global optimum. If a locally optimal subproblem answer can poison the global answer (longest <em>simple</em> path in a graph is the classic case), DP doesn't apply.</li>
+    <li><strong>Overlapping subproblems.</strong> A naive recursive solution recomputes the <em>same</em> subproblems many times. Naive <code>fib(n)</code> spawns O(2ⁿ) calls, but there are only n <em>distinct</em> subproblems — the exponential blowup is pure recomputation. This is exactly what distinguishes DP from divide-and-conquer: merge sort's subproblems (left half, right half) are <em>disjoint</em>, so caching them buys nothing. DP is precisely "divide and conquer, plus a cache, on a problem where the cache actually hits."</li>
+  </ul>
+  <p>Once both hold, the entire technique is: identify the distinct subproblems, compute each <strong>exactly once</strong>, and store the result. Two mechanical strategies exist — same recurrence, opposite execution order:</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Top-down (memoization)</th><th>Bottom-up (tabulation)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Execution order</strong></td>
+        <td>Start at the full problem, recurse down; cache each result on the way back up. Only subproblems actually <em>reachable</em> from the top get computed.</td>
+        <td>Start at the base cases, fill a table upward in dependency order until you reach the answer. Computes every table cell, needed or not.</td>
+      </tr>
+      <tr>
+        <td><strong>How you derive it</strong></td>
+        <td>Directly from the recursive brute force — write the plain recursion, then add a cache check at the top of the function. Lowest-friction path from "correct but exponential" to "correct and polynomial".</td>
+        <td>Requires you to know the dependency order up front (which cells does dp[i][j] read?). Slightly more design work, but the loop structure makes cost and dependencies explicit.</td>
+      </tr>
+      <tr>
+        <td><strong>Space &amp; practicality</strong></td>
+        <td>Cache = O(#states), <em>plus</em> O(recursion depth) call stack — deep inputs can blow the stack. Recursion/dictionary overhead adds constant-factor cost.</td>
+        <td>No recursion, no stack risk, tight loops. Because you control fill order, collapsing the table (keep only the last row / last two values) is visible and easy — this is where space optimization lives.</td>
+      </tr>
+      <tr>
+        <td><strong>Prefer when</strong></td>
+        <td>State space is huge but sparsely visited; recurrence is irregular; you're deriving under interview pressure and want correctness first.</td>
+        <td>All (or most) states are needed anyway; input is large enough that stack depth matters; you want O(1)/O(n) space.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>The interview-safe framing: <em>"Memoization and tabulation execute the same recurrence — one is demand-driven with a cache, the other is schedule-driven with a table. I'll derive top-down because it falls out of the brute force, then convert to bottom-up if we want to optimize space."</em></p>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Overlapping subproblems — naive fib(5) recursion tree. Red nodes are the SAME computation, done three times; amber, twice. Memoize and the tree collapses to one node per distinct value: 15 calls → 6.</div>
+    <pre class="mermaid">
+graph TD
+    F5["fib(5)"] --> F4["fib(4)"]
+    F5 --> F3a["fib(3)"]
+    F4 --> F3b["fib(3)"]
+    F4 --> F2a["fib(2)"]
+    F3a --> F2b["fib(2)"]
+    F3a --> F1a["fib(1)"]
+    F3b --> F2c["fib(2)"]
+    F3b --> F1b["fib(1)"]
+    F2a --> F1c["fib(1)"]
+    F2a --> F0a["fib(0)"]
+    F2b --> F1d["fib(1)"]
+    F2b --> F0b["fib(0)"]
+    F2c --> F1e["fib(1)"]
+    F2c --> F0c["fib(0)"]
+    style F3a fill:#fef3c7,stroke:#d97706
+    style F3b fill:#fef3c7,stroke:#d97706
+    style F2a fill:#fecaca,stroke:#dc2626
+    style F2b fill:#fecaca,stroke:#dc2626
+    style F2c fill:#fecaca,stroke:#dc2626
+    </pre>
+  </div>
+
+  <h2>Plain English: Diffing a Resume Against a Job Description</h2>
+  <p>In applyGOAT you compare a candidate's resume against a job description and quantify how much needs to change. Strip that to its essence: <strong>given two sequences, what is the minimum number of single-element edits — insert, delete, substitute — to turn one into the other?</strong> That is exactly the edit distance (Levenshtein) problem, and it's the canonical 2D DP. Take a tiny real case: the resume says <code>node</code>, the JD says <code>nest</code>. How far apart are those tokens?</p>
+
+  <p>Walk the five construction steps — this checklist is the whole skill; the code is a transcription of it:</p>
+
+  <p><strong>Step 1 — Define the state, in words, before anything else.</strong> <code>dp[i][j]</code> = the minimum number of edits to convert <strong>the first i characters of the resume string</strong> into <strong>the first j characters of the JD string</strong>. Prefixes, not suffixes; counts, not booleans. Say this sentence out loud in an interview — every later index decision follows from it, and both properties hold: optimal substructure (the cheapest way to convert prefix i→j extends a cheapest smaller conversion) and overlap (many alignment paths pass through the same (i, j) prefix pair).</p>
+
+  <p><strong>Step 2 — The recurrence.</strong> Look at the <em>last</em> characters, <code>a[i-1]</code> and <code>b[j-1]</code>:</p>
+  <pre>if a[i-1] == b[j-1]:
+    dp[i][j] = dp[i-1][j-1]                  // free — nothing to fix
+else:
+    dp[i][j] = 1 + min(
+        dp[i-1][j],      // delete a[i-1] from the resume string
+        dp[i][j-1],      // insert b[j-1] into the resume string
+        dp[i-1][j-1]     // substitute a[i-1] → b[j-1]
+    )</pre>
+  <p>Three options because there are exactly three ways an optimal edit script can handle the final character pair. Optimal substructure is what licenses the <code>min</code>: whichever option wins, the remaining prefix conversion inside it must itself be optimal.</p>
+
+  <p><strong>Step 3 — Base cases.</strong> <code>dp[i][0] = i</code> (converting i characters to an empty string = i deletions) and <code>dp[0][j] = j</code> (empty to j characters = j insertions). Note the base cases <em>fall out of the state definition</em> — if step 1 is precise, step 3 is free.</p>
+
+  <p><strong>Step 4 — Fill order.</strong> <code>dp[i][j]</code> reads up, left, and up-left, so row by row, left to right, works.</p>
+
+  <p><strong>Step 5 — Where's the answer?</strong> <code>dp[m][n]</code> — full resume string into full JD string. Bottom-right cell.</p>
+
+  <p>Now execute by hand for <code>node</code> → <code>nest</code>:</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>""</th><th>n</th><th>e</th><th>s</th><th>t</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>""</strong></td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td></tr>
+      <tr><td><strong>n</strong></td><td>1</td><td><strong>0</strong></td><td>1</td><td>2</td><td>3</td></tr>
+      <tr><td><strong>o</strong></td><td>2</td><td>1</td><td><strong>1</strong></td><td>2</td><td>3</td></tr>
+      <tr><td><strong>d</strong></td><td>3</td><td>2</td><td>2</td><td><strong>2</strong></td><td>3</td></tr>
+      <tr><td><strong>e</strong></td><td>4</td><td>3</td><td>2</td><td>3</td><td><strong>3</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p>Answer: <code>dp[4][4] = 3</code>. Sanity check: <code>node</code> → substitute o→e, d→s, e→t → <code>nest</code>. Three edits, matching the table. Every cell was computed once — O(m·n) time on two strings whose naive recursive comparison would branch three ways per character.</p>
+
+  <p><strong>Reconstructing the actual edit script</strong> (the follow-up interviewers love): the table stores costs, not choices — but the choices are recoverable. Start at <code>dp[m][n]</code> and walk backwards: at each cell, ask which neighbor produced it. If characters matched and the value equals the diagonal, move diagonally with no edit; otherwise the neighbor achieving <code>value − 1</code> tells you the operation (diagonal = substitute, left = insert, up = delete). Record operations along the walk, reverse, done — O(m + n) extra work. In applyGOAT terms, that backtrace <em>is</em> the diff view: not just "3 changes needed" but <em>which</em> changes. One caveat that matters below: reconstruction requires keeping the full table, which conflicts with space optimization — say that trade-off out loud before an interviewer raises it.</p>
+
+  <h2>Your Patterns, Mapped</h2>
+  <table>
+    <thead>
+      <tr><th>Problem</th><th>State definition (in words)</th><th>Recurrence shape</th><th>Space-optimized</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Climbing Stairs</strong></td>
+        <td>dp[i] = number of distinct ways to reach step i</td>
+        <td>dp[i] = dp[i−1] + dp[i−2] (count: <em>sum</em> the choices)</td>
+        <td>O(n) time, O(1) space — two variables</td>
+      </tr>
+      <tr>
+        <td><strong>House Robber</strong></td>
+        <td>dp[i] = max loot obtainable considering houses 0…i</td>
+        <td>dp[i] = max(dp[i−1], dp[i−2] + v[i]) (optimize: <em>max</em> over choices)</td>
+        <td>O(n) time, O(1) space — two variables</td>
+      </tr>
+      <tr>
+        <td><strong>Longest Common Subsequence</strong></td>
+        <td>dp[i][j] = LCS length of first i chars of A and first j chars of B</td>
+        <td>Match → dp[i−1][j−1] + 1; else max(dp[i−1][j], dp[i][j−1])</td>
+        <td>O(m·n) time, O(min(m, n)) space — keep two rows</td>
+      </tr>
+      <tr>
+        <td><strong>Edit Distance</strong></td>
+        <td>dp[i][j] = min edits converting first i chars of A into first j chars of B</td>
+        <td>Match → dp[i−1][j−1]; else 1 + min(up, left, diagonal)</td>
+        <td>O(m·n) time, O(min(m, n)) space — keep two rows</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Notice the split: <em>counting</em> problems sum over choices, <em>optimization</em> problems take min/max over choices — the state-definition discipline is identical. And every 1D entry collapses to O(1) space, every 2D entry to one-row space, for the same structural reason: the recurrence only ever reaches back a fixed distance.</p>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    The toy above scales to the real feature. Token-level edit distance over resume bullet points vs JD requirements (sequences of words, not characters) gives you a "how much must change" score per section — and the backtrace gives the actual rewrite suggestions. Two production notes: (1) O(m·n) per pair is fine for documents but not for scoring one resume against thousands of JDs — that's why lesson 10's embedding search does the coarse retrieval and edit distance only runs on the shortlist; coarse-then-exact is the same two-tier move as an index scan followed by a heap filter. (2) If you only need "is the distance ≤ k", you can restrict computation to a diagonal band of width ~2k+1 in the table — O(k·min(m,n)) instead of O(m·n) — because any path straying further off-diagonal already costs more than k.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    Aligning a live conversation's turn sequence against a playbook's expected intent sequence ("greeting → discovery → objection → close") is the same alignment problem: insertions are off-script detours, deletions are skipped steps, substitutions are mismatched intents. Sequence alignment via DP is how you'd score "how far off-script did this call go" without brittle exact matching.
+  </div>
+
+  <h2>The 5-Step Checklist Applied — House Robber, End to End</h2>
+  <p>Houses in a row, each with a value; rob any subset but never two adjacent; maximize loot. Run the checklist cold, in order:</p>
+
+  <p><strong>1. State.</strong> <code>dp[i]</code> = the maximum loot obtainable from houses <code>0…i</code> (whether or not house i itself is robbed — the state covers the <em>prefix</em>, not a commitment about house i). This wording matters: define it as "max loot ending with a robbery at i" instead and you get a different (also valid) recurrence with a different final-answer location — pick one meaning and hold it.</p>
+
+  <p><strong>2. Recurrence.</strong> For house i, two choices: skip it (keep <code>dp[i−1]</code>) or rob it (its value plus the best over houses 0…i−2, since i−1 is now forbidden):</p>
+  <pre>dp[i] = max(dp[i-1], dp[i-2] + value[i])</pre>
+  <p>Optimal substructure check: if we rob house i, the loot from 0…i−2 must itself be optimal — swapping in a better prefix answer can never break the adjacency constraint at i. Overlap check: the naive recursion branches two ways per house over the same shrinking prefixes — fib-shaped, O(2ⁿ) without a cache, n distinct states with one.</p>
+
+  <p><strong>3. Base cases.</strong> <code>dp[0] = value[0]</code>; <code>dp[1] = max(value[0], value[1])</code> (adjacent, pick one).</p>
+
+  <p><strong>4. Fill order.</strong> dp[i] reads i−1 and i−2 → left to right.</p>
+
+  <p><strong>5. Answer location.</strong> <code>dp[n−1]</code> — the state definition says "prefix 0…i", so the full prefix is the answer.</p>
+
+  <pre>function rob(values) {
+  const n = values.length;
+  if (n === 1) return values[0];
+  const dp = new Array(n);
+  dp[0] = values[0];
+  dp[1] = Math.max(values[0], values[1]);
+  for (let i = 2; i < n; i++) {
+    dp[i] = Math.max(dp[i - 1], dp[i - 2] + values[i]);
+  }
+  return dp[n - 1];   // O(n) time, O(n) space
+}</pre>
+
+  <h3>Space optimization — the standard senior follow-up</h3>
+  <p>The loop only ever reads <code>dp[i−1]</code> and <code>dp[i−2]</code>. The rest of the array is dead weight kept alive by habit. Replace it with two rolling variables:</p>
+  <pre>function rob(values) {
+  let prev2 = 0, prev1 = 0;          // best up to i-2, best up to i-1
+  for (const v of values) {
+    const cur = Math.max(prev1, prev2 + v);
+    prev2 = prev1;
+    prev1 = cur;
+  }
+  return prev1;   // O(n) time, O(1) space
+}</pre>
+  <p>The general principle: <strong>look at what the recurrence reads.</strong> If dp[i] reads a fixed window of previous values → O(1) space. If dp[i][j] reads only row i−1 (LCS, edit distance, most grid problems) → keep two rows, O(min(m, n)) by iterating over the shorter string. This is why tabulation earns its keep: the fill order makes the dependency window visible, and the optimization is a mechanical rewrite. Two caveats to volunteer: collapsing the table destroys the backtrace (no reconstruction of the actual path/edit script), and memoized top-down can't do this trick at all — the cache must retain every state because recursion revisits them in no predictable order.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Common failure modes</span>
+    <strong>(1) Recurrence before state.</strong> Writing transitions before you can say what dp[i] means <em>in one sentence</em> is where every off-by-one lives — "first i characters" vs "index i" vs "ending at i" are three different tables. <strong>(2) DP-shaped code with no cache.</strong> Recursing on the right subproblems but forgetting memoization is still O(2ⁿ) — the recurrence gets zero credit without the store. <strong>(3) Forcing DP where substructure is absent.</strong> Longest <em>simple</em> path, or any problem where a subproblem's optimum can conflict with global constraints (the visited-set makes subproblems non-independent) — that's lesson 15's territory: backtracking, not DP. The two preconditions are a real admission test, not a formality.
+  </div>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Derive it live</div>
+          <div class="playbook-q-text">"Given two strings, compute the minimum number of insertions, deletions, and substitutions to turn one into the other. Walk me through your approach."</div>
+          <div class="playbook-q-probe">Follow-up: "Can you reduce the space? And could you still output the actual edit sequence?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"This is edit distance — a 2D DP. First the state: dp[i][j] is the minimum edits to convert the first i characters of A into the first j characters of B. Recurrence by cases on the last characters: if A[i−1] equals B[j−1], dp[i][j] = dp[i−1][j−1], the pair is free; otherwise it's 1 + min of three options — dp[i−1][j] for deleting from A, dp[i][j−1] for inserting into A, dp[i−1][j−1] for substituting. Base cases fall out of the state definition: dp[i][0] = i, all deletions; dp[0][j] = j, all insertions. Each cell reads up, left, and up-left, so I fill row by row, and the answer is dp[m][n]. O(m·n) time and space. Before coding I'd verify both DP preconditions: optimal substructure — an optimal edit script's prefix handling must itself be optimal — and overlapping subproblems — the naive three-way recursion revisits the same (i, j) prefix pairs exponentially often."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Row i only reads row i−1, so keep two rows — O(min(m, n)) space by iterating over the shorter string. But that's a trade-off, not a free win: reconstructing the edit sequence needs a backtrace from dp[m][n], walking to whichever neighbor produced each cell — diagonal means match or substitute, left means insert, up means delete — and that walk needs the full table, O(m·n) space, though the backtrace itself is only O(m + n) time. So: distance only → two rows; actual diff → full table. There's a divide-and-conquer refinement (Hirschberg's algorithm) that recovers the alignment in linear space if the interviewer pushes, but I'd name it rather than derive it."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Recognizing DP</div>
+          <div class="playbook-q-text">"How do you decide a problem needs dynamic programming rather than plain recursion, divide and conquer, or greedy?"</div>
+          <div class="playbook-q-probe">Follow-up: "And once you've decided it's DP — memoization or tabulation?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Two tests. First, optimal substructure: can I build the optimal answer from optimal answers to smaller subproblems? Greedy needs this too — the difference is greedy additionally requires that one locally best choice is <em>provably safe</em> without examining alternatives, while DP hedges by evaluating every choice and taking min/max. If I can't prove the greedy exchange argument, DP is the safe default. Second, overlapping subproblems: does the naive recursion recompute the same states? If subproblems are disjoint — merge sort's halves — it's divide and conquer, and a cache never hits; if they overlap, caching converts exponential to (number of states) × (transition cost). Signal words: 'minimum/maximum cost', 'number of ways', 'longest/shortest subsequence', decisions over prefixes with a small state footprint. And a negative test: if a subproblem's answer depends on the whole path taken to reach it — longest simple path with its visited set — substructure fails, and it's backtracking territory instead."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Same recurrence either way, so it's an engineering call. I derive top-down first — brute-force recursion plus a cache check is the shortest path to correct, and it only computes reachable states. I convert to bottom-up when the input is deep enough to threaten stack limits, when essentially all states get visited anyway so recursion overhead is pure loss, or when I want the space optimization — tabulation's explicit fill order exposes that each row reads only the previous one, which the memoized version's unpredictable visit order can never exploit."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Why greedy fails</div>
+          <div class="playbook-q-text">"Coin change: fewest coins to make an amount. Why not just greedily take the largest coin that fits?"</div>
+          <div class="playbook-q-probe">Follow-up: "So why does greedy work fine for US coins {1, 5, 10, 25}?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Concrete counterexample: coins {1, 3, 4}, amount 6. Greedy takes 4, leaving 2, then 1 + 1 — three coins. Optimal is 3 + 3 — two coins. Taking the biggest coin committed us to a remainder (2) whose best decomposition is bad, and greedy has no mechanism to reconsider. DP fixes exactly this: define dp[a] = fewest coins to make amount a, with dp[a] = 1 + min over coins c of dp[a−c], base dp[0] = 0, filled from 0 upward, answer at dp[amount]. It doesn't guess which coin is best — it evaluates all three continuations of every subamount and keeps the min. O(amount × #coins). The structural lesson: this problem has optimal substructure, but it does <em>not</em> have the greedy-choice property — the locally largest coin isn't provably part of an optimal solution. Those are separate requirements, and coin change is the cleanest demonstration that the second doesn't follow from the first."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Because {1, 5, 10, 25} is a <em>canonical</em> coin system — each denomination relates to the others such that the greedy exchange argument goes through: any solution using smaller coins where a larger one fits can be exchanged into one that takes the larger coin without getting worse. That's a property of the specific denomination set, not of coin change in general — add a 21-cent coin and greedy breaks again (63 = 21×3, but greedy says 25 + 10×3 + 5 + 1×3, eight coins). The senior takeaway: greedy correctness is always a theorem about the input structure, never a default assumption. If I can't sketch the exchange argument in a minute, I write the DP."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <h2>Primary Sources</h2>
+  <ul>
+    <li><strong>Introduction to Algorithms (CLRS) — Chapter 15, Dynamic Programming</strong> — the formal treatment of optimal substructure, overlapping subproblems, and the memoization/tabulation duality, with LCS as a worked example.</li>
+    <li><a href="https://en.wikipedia.org/wiki/Edit_distance" target="_blank">Edit distance — Wikipedia</a> — the Levenshtein recurrence, the banded ≤ k variant, and Hirschberg's linear-space alignment mentioned in the playbook.</li>
+  </ul>
+
+  <h2>Navigation</h2>
+  <p>
+    <strong>Previous:</strong> <a href="0015-backtracking.html">Lesson 15 — Backtracking & Combinatorial Search</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0017-python-execution-model.html">Lesson 17 — Python Execution Model: Bytecode &amp; the CPython VM</a><br>
+    More Data Structures &amp; Algorithms lessons (Prefix Sum, Graphs, Heaps, Greedy, and more) are still on the roadmap — check the curriculum page.
+  </p>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Not sure why the edit-distance recurrence has exactly three options and not more? Want to convert the House Robber solution to top-down memoization and compare the two side by side? Or work the "dp[i] = max loot ending with a robbery at i" alternative state definition to see how the answer location changes?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 16 &nbsp;·&nbsp; Dynamic Programming Patterns &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "What distinguishes a DP problem from a divide-and-conquer problem?",
+    options: [
+      "DP problems are optimization problems; divide and conquer only sorts and searches",
+      "DP subproblems overlap — the naive recursion recomputes the same states — while divide-and-conquer subproblems are disjoint, so caching them buys nothing",
+      "DP always uses a 2D table; divide and conquer uses recursion",
+      "DP is bottom-up; divide and conquer is top-down"
+    ],
+    answer: 1,
+    explanation: "Both need substructure, but merge sort's halves are disjoint — a cache would never hit. DP is exactly 'divide and conquer plus a cache, on a problem where the cache hits': overlapping subproblems are what convert exponential call trees into (#states) × (transition cost)."
+  },
+  {
+    q: "In edit distance, dp[i][j] means 'min edits converting the first i chars of A into the first j chars of B'. When A[i−1] ≠ B[j−1], the recurrence is 1 + min of which three cells?",
+    options: [
+      "dp[i−1][j] (delete), dp[i][j−1] (insert), dp[i−1][j−1] (substitute)",
+      "dp[i−1][j−1], dp[i−2][j−2], dp[i−1][j]",
+      "dp[i+1][j], dp[i][j+1], dp[i+1][j+1]",
+      "dp[i−1][j] and dp[i][j−1] only — substitution isn't a separate case"
+    ],
+    answer: 0,
+    explanation: "Exactly three ways an optimal edit script can handle the last character pair: delete A's last char (up), insert B's last char (left), or substitute one for the other (diagonal). Each maps to one neighbor cell; the min is licensed by optimal substructure."
+  },
+  {
+    q: "House Robber's recurrence is dp[i] = max(dp[i−1], dp[i−2] + v[i]). Why can the O(n) dp array be replaced by two variables?",
+    options: [
+      "Because the array is sorted, so only the last element matters",
+      "Because the recurrence only ever reads a fixed window — the previous two values — so older entries are dead once i moves past them",
+      "Because memoization caches results automatically",
+      "It can't — dropping the array changes the answer"
+    ],
+    answer: 1,
+    explanation: "Space optimization always comes from reading the dependency window off the recurrence: a fixed lookback of 2 → two rolling variables, O(1) space. Same reasoning collapses 2D tables to two rows when row i reads only row i−1 — at the cost of losing the backtrace/reconstruction."
+  },
+  {
+    q: "You write the correct recursive decomposition for a DP problem but forget to memoize. What happens?",
+    options: [
+      "Still polynomial — the recurrence itself provides the speedup",
+      "Exponential blowup anyway — the recursion re-solves the same overlapping subproblems; the cache, not the recurrence, is what makes it polynomial",
+      "A stack overflow on all inputs",
+      "Wrong answers, since results aren't stored"
+    ],
+    answer: 1,
+    explanation: "The answer is still correct — just exponentially slow. Naive fib is the canonical case: right recurrence, O(2ⁿ) calls over only n distinct states. DP's entire mechanism is computing each distinct state once and storing it; skip the store and you've written plain recursion."
+  },
+  {
+    q: "With coins {1, 3, 4} and amount 6, greedy (largest coin first) gives 4+1+1 = 3 coins but the optimum is 3+3 = 2. What does this demonstrate?",
+    options: [
+      "Coin change lacks optimal substructure, so neither greedy nor DP applies",
+      "Greedy is always wrong for coin change, including US denominations",
+      "The problem has optimal substructure but not the greedy-choice property — the locally largest coin isn't provably part of an optimal solution, so DP must evaluate all choices per subamount",
+      "The DP would also return 3 coins; the example is a tie"
+    ],
+    answer: 2,
+    explanation: "Optimal substructure holds (dp[a] = 1 + min over coins of dp[a−c] is valid), so DP finds 2 coins. What fails is the greedy-choice property — a property of the denomination set, not of the problem class. Canonical systems like {1,5,10,25} happen to satisfy it; {1,3,4} doesn't. Greedy correctness is a theorem you prove, never a default."
+  }
+];
+initQuiz('quiz', QUIZ_DATA, '0016');
+</script>
+
+<script>
+const LESSON_ID = '0016';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

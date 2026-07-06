@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 14 — Binary Search Patterns</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 14 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:70%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Data Structures &amp; Algorithms &nbsp;›&nbsp; Array &amp; String Patterns &nbsp;·&nbsp; Lesson 14</div>
+    <div class="pillar-badge">Array & String Patterns</div>
+    <h1 class="lesson-title">Binary Search Patterns</h1>
+    <p class="lesson-subtitle">Beyond sorted arrays — binary search on the answer, rotated arrays, and search spaces that aren't obviously sorted.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Real Invariant: A Monotonic Predicate</h2>
+  <p>The interview-grade framing is not "binary search finds an element in a sorted array." It's this: <strong>binary search halves any search space over which some boolean predicate is monotonic</strong> — i.e., there's a function <code>p(x)</code> that is <code>false, false, ..., false, true, true, ..., true</code> as <code>x</code> sweeps the space, and you're finding the boundary where it flips. A sorted array is just the special case where the predicate is <code>arr[i] &gt;= target</code>. Once you see it this way, three things follow:</p>
+  <ul>
+    <li>The <strong>input doesn't have to be an array</strong>. Any ordered range of candidate answers works, as long as feasibility is monotonic across it.</li>
+    <li>The <strong>array doesn't have to be globally sorted</strong>. It only needs enough structure that, at each step, you can decide which half provably cannot contain the answer (rotated arrays exploit exactly this).</li>
+    <li>If the predicate is <strong>not</strong> monotonic — feasibility flips true→false→true — binary search is simply wrong for the problem, no matter how sorted the data looks. That's the failure many candidates never check for.</li>
+  </ul>
+
+  <table>
+    <thead>
+      <tr><th>Variant</th><th>Search space</th><th>What's monotonic</th><th>When to reach for it</th><th>Complexity</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Classic</strong></td>
+        <td>Indices of a sorted array</td>
+        <td><code>arr[i] &gt;= target</code> flips false→true exactly once</td>
+        <td>Exact-match lookup in sorted data</td>
+        <td>O(log n)</td>
+      </tr>
+      <tr>
+        <td><strong>Rotated array</strong></td>
+        <td>Indices of a sorted-then-rotated array</td>
+        <td>Each half of any <code>[left, right]</code> window — at least one side is properly sorted</td>
+        <td>"Sorted, but pivoted at an unknown point" (circular buffers, wrap-around logs)</td>
+        <td>O(log n) distinct values; O(n) worst case with duplicates</td>
+      </tr>
+      <tr>
+        <td><strong>Binary search on the answer</strong></td>
+        <td>A numeric range of <em>candidate answers</em>, not the input at all</td>
+        <td><code>feasible(x)</code>: if capacity/speed/size x works, every larger x works too</td>
+        <td>"Minimize the maximum" / "maximize the minimum" optimization problems</td>
+        <td>O(n log R), R = answer range; feasibility check is usually O(n)</td>
+      </tr>
+      <tr>
+        <td><strong>First/last occurrence</strong> (lower/upper bound)</td>
+        <td>Indices of a sorted array with duplicates</td>
+        <td><code>arr[i] &gt;= target</code> (lower) / <code>arr[i] &gt; target</code> (upper)</td>
+        <td>Boundary-finding: first match, insertion point, count of matches, "first index where condition holds"</td>
+        <td>O(log n)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>The two loop templates — and why mixing them causes infinite loops</h3>
+  <p>Almost every binary search bug is a mismatch between three coupled choices: the loop condition, the boundary updates, and the direction <code>mid</code> rounds. They come in two consistent templates. Pick one deliberately; never mix parts.</p>
+
+  <pre><code>// TEMPLATE A — exact-match search. Search space shrinks to empty.
+// Invariant: answer, if it exists, is inside [left, right] (inclusive).
+left = 0; right = n - 1
+while left &lt;= right:                 // run until the window is EMPTY
+    mid = left + (right - left) / 2  // floor division; avoids (left+right) overflow
+    if arr[mid] == target: return mid
+    elif arr[mid] &lt; target: left  = mid + 1   // mid is ruled out — exclude it
+    else:                   right = mid - 1   // mid is ruled out — exclude it
+return -1
+
+// TEMPLATE B — boundary search (lower_bound). Search space shrinks to ONE element.
+// Invariant: the flip point (first i where p(i) is true) is inside [left, right].
+left = 0; right = n                  // note: right = n, "not found" sentinel
+while left &lt; right:                  // run until ONE candidate remains
+    mid = left + (right - left) / 2  // floor — pairs with right = mid
+    if p(mid):  right = mid          // mid might BE the answer — keep it in range
+    else:       left  = mid + 1      // mid is definitely not the answer
+return left                          // first index where p is true, or n</code></pre>
+
+  <p>Three details that separate a clean answer from a buggy one:</p>
+  <ul>
+    <li><strong><code>mid = left + (right - left) / 2</code></strong>, not <code>(left + right) / 2</code>. In fixed-width integer languages (Java, C++, C#), <code>left + right</code> can overflow when both are near <code>INT_MAX</code>. In Python/JS it's habit-signaling; in Java it's correctness. (Historical note: this exact overflow sat in the JDK's <code>Arrays.binarySearch</code> for years before Joshua Bloch flagged it.)</li>
+    <li><strong><code>right = mid</code> vs <code>right = mid - 1</code></strong> is not a stylistic choice — it encodes whether <code>mid</code> can still be the answer. In Template B you tested <code>p(mid)</code> is true, so <code>mid</code> may be the boundary itself; excluding it with <code>mid - 1</code> can skip the answer.</li>
+    <li><strong>Rounding direction must match the update that can stall.</strong> With floor rounding, <code>mid</code> can equal <code>left</code> when the window has 2 elements — so the branch that keeps the low side must move it (<code>left = mid + 1</code>). If your update is <code>left = mid</code> (searching for the <em>last</em> true, upper-boundary flavor), you must round <em>up</em>: <code>mid = left + (right - left + 1) / 2</code>. Get this wrong and the loop spins forever on a 2-element window.</li>
+  </ul>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Binary search on the answer — minimize ship capacity (LeetCode 1011 shape)</div>
+    <pre class="mermaid">
+graph TD
+    A["Define answer space:<br/>lo = max(weights) — must fit heaviest package<br/>hi = sum(weights) — one giant ship does it in 1 day"] --> B["mid = lo + (hi − lo) / 2<br/>candidate capacity"]
+    B --> C["feasible(mid):<br/>greedily pack packages in order,<br/>start a new day when the load would exceed mid,<br/>count days used"]
+    C --> D{"days used ≤ D?"}
+    D -->|"Yes — mid is enough"| E["hi = mid<br/>keep mid as a candidate,<br/>try to do it with LESS capacity"]
+    D -->|"No — too slow"| F["lo = mid + 1<br/>mid is ruled out,<br/>need MORE capacity"]
+    E --> G{"lo == hi?"}
+    F --> G
+    G -->|"No — keep halving"| B
+    G -->|"Yes"| H["lo = minimum feasible capacity<br/>O(n log(sum − max)) total"]
+    style C fill:#dbeafe,stroke:#2563eb
+    style H fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <p>Notice the shape of the diagram: it is exactly Template B, but <code>i</code> is a <em>capacity</em>, not an index, and <code>p(x)</code> is a greedy simulation instead of an array read. Feasibility is monotonic by construction — if capacity <code>x</code> ships everything in ≤ D days, capacity <code>x+1</code> trivially does too — so the false→true flip point exists and is unique. That monotonicity argument is the thing to say out loud in an interview <em>before</em> writing the loop; it's what licenses binary search at all.</p>
+
+  <h2>Plain English: First Log Entry After a Timestamp</h2>
+  <p>Concrete, production-shaped scenario — the kind you'd hit building observability tooling. You have an append-only event log: entries are written in timestamp order, millions of them, stored as a sorted array (or a memory-mapped file of fixed-width records — same access pattern). An incident started at <code>T = 14:32:07.000</code> and you want every entry from that moment onward. The query is: <strong>find the first index whose timestamp is ≥ T</strong>, then stream from there.</p>
+
+  <p>This is a pure <code>lower_bound</code> — a boundary search, not an exact match. <code>T</code> itself almost certainly doesn't appear in the log (timestamps are effectively unique at millisecond precision), so Template A's <code>arr[mid] == target</code> would return -1 and tell you nothing. The predicate is <code>p(i) = log[i].ts &gt;= T</code>, which is monotonic precisely because the log is append-ordered: false for every entry before the incident, true for every entry after, one flip point.</p>
+
+  <pre><code>// p(i): "is entry i at-or-after the incident start?"
+// Monotonic because the log is append-ordered by timestamp.
+
+function firstEntryAtOrAfter(log, T):
+    left = 0
+    right = log.length            // sentinel: "no entry is >= T"
+    while left &lt; right:
+        mid = left + (right - left) / 2
+        if log[mid].ts &gt;= T:      // p(mid) true: mid could be the first one
+            right = mid           //   → keep mid in the window
+        else:                     // p(mid) false: entry is pre-incident
+            left = mid + 1        //   → mid can never be the answer
+    return left                   // first index with ts >= T, or log.length</code></pre>
+
+  <p>Walk one iteration to feel the invariant. Say 10M entries, <code>mid = 5,000,000</code>, and <code>log[mid].ts = 14:31:59</code> — before the incident. Every entry at index ≤ 5,000,000 is also before it (append order), so five million entries are eliminated by <em>one comparison</em>: <code>left = 5,000,001</code>. That's the entire value proposition — ~23 comparisons instead of a 10M-row scan. Two production-grade follow-ons:</p>
+  <ul>
+    <li><strong>Range queries compose from two boundary searches.</strong> "Entries between T1 and T2" = <code>lowerBound(T1)</code> to <code>lowerBound(T2)</code>. Count of entries in the window is just the difference of the two indices — no scan.</li>
+    <li><strong>This is what your database does.</strong> A B-tree index seek for <code>WHERE ts &gt;= T ORDER BY ts</code> is the same boundary search generalized to a high-fanout tree (log<sub>~200</sub> instead of log<sub>2</sub>). Lesson 0002's index-seek mechanics and this lesson's <code>lower_bound</code> are one idea at two scales.</li>
+  </ul>
+
+  <h2>Your Stack, Mapped: The Four Variants as Canonical Problems</h2>
+  <table>
+    <thead>
+      <tr><th>Variant</th><th>Canonical problem</th><th>Loop / boundary rule</th><th>Complexity</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Classic exact match</td>
+        <td>Binary Search (LC 704)</td>
+        <td>Template A: <code>left &lt;= right</code>; <code>left = mid + 1</code> / <code>right = mid - 1</code> — <code>mid</code> always excluded after comparison</td>
+        <td>O(log n)</td>
+      </tr>
+      <tr>
+        <td>Rotated array</td>
+        <td>Search in Rotated Sorted Array (LC 33)</td>
+        <td>Template A shell; each step first identify the sorted half via <code>nums[left] &lt;= nums[mid]</code>, then range-check the target against that half's endpoints</td>
+        <td>O(log n) — degrades to O(n) with duplicates (LC 81)</td>
+      </tr>
+      <tr>
+        <td>Search on the answer</td>
+        <td>Capacity To Ship Packages Within D Days (LC 1011); same skeleton as Koko Eating Bananas (LC 875), Split Array Largest Sum (LC 410)</td>
+        <td>Template B over the answer range: <code>left &lt; right</code>; feasible → <code>right = mid</code>, infeasible → <code>left = mid + 1</code>; return <code>left</code></td>
+        <td>O(n log R), R = hi − lo of the answer range</td>
+      </tr>
+      <tr>
+        <td>First/last occurrence</td>
+        <td>Find First and Last Position of Element in Sorted Array (LC 34)</td>
+        <td>Two Template B passes: first = <code>lowerBound(target)</code>; last = <code>lowerBound(target + 1) − 1</code>; validate first actually equals target</td>
+        <td>O(log n)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — applyGOAT</span>
+    Suppose applyGOAT's pricing has a sorted array of tier price points — <code>[0, 9, 29, 79, 199]</code> — and given a user's stated budget you want the highest tier they qualify for (largest price ≤ budget). That is <code>upperBound(budget) − 1</code>: find the first price <em>strictly greater</em> than the budget, step back one. It's the mirror-image boundary search — you're finding the <em>last true</em> instead of the first, which is exactly the case where <code>left = mid</code> updates appear and <code>mid</code> must round <em>up</em> (or, cleaner: keep the round-down lower-bound template on the predicate <code>price &gt; budget</code> and subtract one from the result). Five tiers doesn't need log-time — the point is that the moment this becomes "find the qualifying entry in a sorted fee schedule / rate table / quota ladder with hundreds of rows," it's the same two lines, and the boundary-vs-exact-match distinction is what keeps a budget of exactly 29 from falling into the wrong tier.
+  </div>
+
+  <h2>Deeper: The Rotated Sorted Array, Worked Properly</h2>
+  <p>Take <code>nums = [15, 18, 2, 3, 6, 12]</code> — a sorted array rotated left of its minimum. Global sortedness is broken (18 → 2), so plain binary search's comparison no longer tells you which side the target is on. The recovery insight: <strong>when you cut a rotated array at any <code>mid</code>, at least one of the two halves contains no rotation point, and is therefore perfectly sorted</strong>. There's only one rotation point in the whole array; it can't be in both halves.</p>
+
+  <p>So each iteration becomes a two-step decision instead of one comparison:</p>
+  <ol>
+    <li><strong>Which half is sorted?</strong> Test <code>nums[left] &lt;= nums[mid]</code>. If true, the left half <code>[left..mid]</code> is sorted (no wrap between them — with distinct values, a wrap inside that span would force <code>nums[left] &gt; nums[mid]</code>). If false, the rotation point is in the left half, so the right half <code>[mid..right]</code> must be sorted.</li>
+    <li><strong>Is the target inside the sorted half's range?</strong> A sorted half has known endpoints, so a simple range check answers definitively. If the target is in range, search that half. If not, it <em>must</em> be in the other (messy) half — which is itself a smaller rotated-or-sorted array, so recursion/iteration is sound.</li>
+  </ol>
+
+  <pre><code>function searchRotated(nums, target):
+    left = 0; right = nums.length - 1
+    while left &lt;= right:
+        mid = left + (right - left) / 2
+        if nums[mid] == target: return mid
+
+        if nums[left] &lt;= nums[mid]:               // LEFT half is sorted
+            if nums[left] &lt;= target &lt; nums[mid]:  // target inside sorted-left's range?
+                right = mid - 1                    //   yes → binary search left
+            else:
+                left = mid + 1                     //   no  → must be in messy right
+        else:                                      // RIGHT half is sorted
+            if nums[mid] &lt; target &lt;= nums[right]: // target inside sorted-right's range?
+                left = mid + 1                     //   yes → binary search right
+            else:
+                right = mid - 1                    //   no  → must be in messy left
+    return -1</code></pre>
+
+  <p>Trace <code>target = 3</code> in <code>[15, 18, 2, 3, 6, 12]</code>:</p>
+  <ul>
+    <li><code>left=0, right=5, mid=2</code> → <code>nums[2]=2</code>. Is left half sorted? <code>nums[0]=15 &lt;= 2</code>? No — so the right half <code>[2, 3, 6, 12]</code> is sorted. Is <code>2 &lt; 3 &lt;= 12</code>? Yes → <code>left = 3</code>.</li>
+    <li><code>left=3, right=5, mid=4</code> → <code>nums[4]=6</code>. <code>nums[3]=3 &lt;= 6</code> → left half sorted. Is <code>3 &lt;= 3 &lt; 6</code>? Yes → <code>right = 3</code>.</li>
+    <li><code>left=3, right=3, mid=3</code> → <code>nums[3] == 3</code>. Found in 3 probes.</li>
+  </ul>
+
+  <p>Note the <code>&lt;=</code> in <code>nums[left] &lt;= nums[mid]</code>: when <code>left == mid</code> (2-element window), the left "half" is one element and trivially sorted — using strict <code>&lt;</code> there misroutes that case. And the duplicates caveat is worth volunteering unprompted: with duplicates (e.g. <code>[2, 2, 2, 3, 2]</code>), <code>nums[left] == nums[mid] == nums[right]</code> tells you <em>nothing</em> about which half is sorted; the standard fix is shrinking both ends by one (<code>left++, right--</code>), which is correct but collapses the worst case to O(n). Knowing that binary search's guarantee <em>degrades</em>, and exactly why, reads as senior.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Common failure modes — the ones interviewers actually watch for</span>
+    <strong>1. Infinite loop from mismatched template parts:</strong> <code>while left &lt; right</code> with <code>left = mid</code> and floor rounding spins forever on <code>[left, left+1]</code> — <code>mid</code> computes to <code>left</code>, and <code>left = mid</code> makes no progress. <strong>2. Off-by-one on exit:</strong> Template A ends with <code>left &gt; right</code> and <code>left</code> = insertion point; Template B ends with <code>left == right</code> = the boundary. Returning the wrong variable after choosing a template is a classic silent bug. <strong>3. Assuming sorted when it's only rotated:</strong> plain binary search on a rotated array returns wrong answers <em>silently</em> — it terminates, it's fast, and it's wrong. <strong>4. Binary searching a non-monotonic predicate:</strong> "find a value where cost is exactly K" when cost rises then falls has two flip points; binary search converges confidently to garbage. Prove the single-flip property before writing the loop — if you can't articulate why <code>p(x) true ⇒ p(x+1) true</code>, you don't have a binary search problem yet.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — Engineering Execution / observability</span>
+    The log-timestamp <code>lower_bound</code> above is not a toy: it's the read path of every time-series query you'll run during an incident. Loki, ClickHouse, and Prometheus's TSDB all lay out chunks/blocks time-ordered and boundary-search to the start offset before scanning; SQL <code>WHERE created_at &gt;= ?</code> on an indexed column is the B-tree cousin. The transferable habit: whenever you find yourself writing a linear scan over data that has a natural order (timestamps, sequence numbers, monotonic IDs), ask "what's the predicate, and is it monotonic?" — if yes, the scan is a boundary search you haven't written yet.
+  </div>
+
+  <h2>Interview Playbook</h2>
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Rotated sorted array</div>
+          <div class="playbook-q-text">"You're given a sorted array that's been rotated at an unknown pivot, and a target. Find its index in O(log n). Talk me through your approach."</div>
+          <div class="playbook-q-probe">Follow-up: "What changes if the array can contain duplicates?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Global order is broken, but the key structural fact survives: there's exactly one rotation point, so when I split at any mid, at least one half is fully sorted. Each iteration I do two checks. First, which half is sorted: if <code>nums[left] &lt;= nums[mid]</code>, the left half is — a rotation point inside it would force <code>nums[left] &gt; nums[mid]</code> with distinct values. Second, I range-check the target against the sorted half's endpoints, because a sorted range is the only place I can answer 'is it here?' definitively. If it's in range, I recurse into that half; otherwise it must be in the other half, which is itself a smaller rotated-or-sorted array, so the invariant holds. Standard Template-A shell — <code>left &lt;= right</code>, exclude mid on both updates — and I still halve every step, so O(log n). I'd also note the <code>&lt;=</code> in the sorted-half test matters: when left equals mid on a two-element window, that one-element 'half' is trivially sorted, and strict less-than misroutes it."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Duplicates break the half-detection: if <code>nums[left] == nums[mid] == nums[right]</code> — say <code>[2, 2, 2, 3, 2]</code> — I can't tell which side holds the rotation point. The standard fix is to shrink both boundaries by one and continue; it's correct, but in the adversarial all-duplicates case every step shrinks by O(1) instead of halving, so worst case degrades to O(n). That's not a bug in my solution — it's information-theoretic: with duplicates masking the structure, no comparison-based approach can guarantee log time. I'd say that explicitly rather than hand-wave the complexity."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Binary search on the answer</div>
+          <div class="playbook-q-text">"There's no sorted array anywhere in this problem. What makes you think binary search applies, and how do you set it up?"</div>
+          <div class="playbook-q-probe">Follow-up: "How do you choose the initial bounds, and what happens if you get them wrong?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Binary search never needed a sorted array — it needs a monotonic predicate over an ordered search space. Here the space is the range of candidate answers, and the predicate is a feasibility check. Take ship capacities: <code>feasible(c)</code> = 'can I ship everything within D days at capacity c', computed by a greedy O(n) pass. It's monotonic by a one-line argument — any schedule that works at capacity c works unchanged at c+1 — so feasibility is false…false, true…true across the range, and the minimum feasible capacity is the flip point. I binary search for it with the lower-bound template: feasible → <code>right = mid</code> because mid might be the answer; infeasible → <code>left = mid + 1</code>. Total cost O(n log R) where R is the answer range. The tell for this pattern is the phrase 'minimize the maximum' or 'maximize the minimum' — the answer is a threshold, and thresholds over monotone feasibility are binary-searchable. Same skeleton solves Koko Eating Bananas and Split Array Largest Sum; only the feasibility function changes."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Bounds must bracket the flip point: <code>lo</code> = the smallest possibly-valid answer, <code>hi</code> = a value guaranteed feasible. For shipping, <code>lo = max(weights)</code> — anything smaller can't even load the heaviest package, so the predicate isn't just false there, it's ill-defined — and <code>hi = sum(weights)</code>, which trivially ships everything in one day. Too-wide bounds only cost extra log-factor iterations — cheap. Too-narrow bounds are a correctness bug: if the true answer sits outside <code>[lo, hi]</code>, the loop converges to a boundary value and returns it with full confidence — no error, no signal. So I derive both bounds from the problem's constraints and state the justification out loud; 'hi is guaranteed feasible' is the invariant that makes returning <code>left</code> safe."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — The infinite-loop gotcha</div>
+          <div class="playbook-q-text">"This binary search hangs on some inputs: <code>while (left &lt; right) { mid = (left + right) / 2; if (check(mid)) left = mid; else right = mid - 1; }</code>. Diagnose it."</div>
+          <div class="playbook-q-probe">Follow-up: "Which template do you personally default to, and why?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Two-element window: <code>right == left + 1</code>. Floor division gives <code>mid = left</code>. If <code>check(mid)</code> is true, the update is <code>left = mid</code> — which is <code>left = left</code>. No progress, infinite loop. The root cause is a rounding/update mismatch: this loop keeps <code>mid</code> in the window on the <em>low</em> side (<code>left = mid</code>, hunting the last true), so <code>mid</code> must round toward the <em>high</em> side to guarantee progress — <code>mid = left + (right - left + 1) / 2</code>. Rule of thumb: whichever boundary can be assigned <code>mid</code> directly, round <code>mid</code> away from that boundary. And separately, <code>(left + right) / 2</code> is an overflow bug in fixed-width languages — the safe form is <code>left + (right - left) / 2</code>, or with the +1 for round-up. Two distinct bugs in one line; I'd name both."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"I default to the lower-bound template — <code>left &lt; right</code>, <code>right = mid</code> / <code>left = mid + 1</code>, floor rounding, return <code>left</code> — because it's the one where floor rounding and the updates can never stall, and it generalizes: exact match is lower_bound plus an equality check, last-occurrence is <code>lowerBound(target + 1) - 1</code>, and search-on-the-answer is the same loop over a value range. One memorized-and-understood template with derived variants beats four half-remembered ones; the failure mode in interviews is stitching the condition from one template to the updates of another under pressure."</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <h2>Primary Sources</h2>
+  <ul>
+    <li><a href="https://en.wikipedia.org/wiki/Binary_search_algorithm" target="_blank" rel="noopener">Binary search algorithm — Wikipedia</a> — includes the variants (leftmost/rightmost element) and the history of the JDK overflow bug.</li>
+    <li><strong>Introduction to Algorithms (CLRS)</strong> — binary search and divide-and-conquer recurrence analysis; the T(n) = T(n/2) + O(1) → O(log n) argument formalized.</li>
+  </ul>
+
+  <p style="margin-top:2rem">
+    <strong>Previous:</strong> <a href="0013-sliding-window.html">Lesson 13 — Sliding Window</a><br>
+    <strong>Next:</strong> <a href="0015-backtracking.html">Lesson 15 — Backtracking &amp; Combinatorial Search</a>
+  </p>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Still fuzzy on why <code>right = mid</code> keeps mid in play but <code>right = mid - 1</code> excludes it? Want to derive the round-up rule for last-occurrence searches from scratch instead of memorizing it? Not sure how to prove a feasibility predicate is monotonic for a problem like Split Array Largest Sum? Want to walk the rotated-array trace with a target that's in the messy half?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 14 &nbsp;·&nbsp; Binary Search Patterns &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "Why write mid = left + (right - left) / 2 instead of mid = (left + right) / 2?",
+    options: [
+      "It rounds toward the correct boundary automatically",
+      "It avoids integer overflow when left and right are both large in fixed-width integer languages",
+      "It is faster because it avoids one addition",
+      "It guarantees the loop terminates even with left = mid updates"
+    ],
+    answer: 1,
+    explanation: "left + right can exceed the integer max when both are large, producing a negative or wrong mid in languages like Java/C++/C#. Subtracting first keeps every intermediate value in range. It does nothing for rounding direction or termination — those are separate concerns."
+  },
+  {
+    q: "In a rotated sorted array with distinct values, nums[left] <= nums[mid] tells you that:",
+    options: [
+      "The target is in the left half",
+      "The rotation point is at mid",
+      "The left half [left..mid] is properly sorted, so you can range-check the target against it",
+      "The array was not actually rotated"
+    ],
+    answer: 2,
+    explanation: "With distinct values, a rotation point inside [left..mid] would force nums[left] > nums[mid]. So nums[left] <= nums[mid] proves the left half is sorted — which is the only kind of range you can definitively range-check the target against. It says nothing yet about where the target is."
+  },
+  {
+    q: "What property must hold before 'binary search on the answer' is valid for a problem like Capacity To Ship Packages?",
+    options: [
+      "The input array must be sorted",
+      "The feasibility predicate must be monotonic: if a candidate answer works, every larger (or every smaller) candidate also works",
+      "The answer range must be smaller than the input size",
+      "The feasibility check must run in O(log n)"
+    ],
+    answer: 1,
+    explanation: "The input is never sorted in these problems — the search space is the range of candidate answers, and the requirement is a single false→true flip in the feasibility predicate. If capacity c works, c+1 trivially works, so the flip point exists and is unique. Without monotonicity, binary search converges confidently to a wrong answer."
+  },
+  {
+    q: "This loop hangs: while (left < right) { mid = floor((left+right)/2); if (ok(mid)) left = mid; else right = mid - 1; }. Why?",
+    options: [
+      "The loop condition should be left <= right",
+      "right = mid - 1 can skip over the answer",
+      "On a two-element window, floor rounding gives mid = left, so left = mid makes no progress",
+      "ok(mid) should be checked before computing mid"
+    ],
+    answer: 2,
+    explanation: "When right == left + 1, floor gives mid = left; if ok(mid) is true, left = mid assigns left to itself forever. Because this loop keeps mid on the LOW side (searching for the last true), mid must round UP: mid = left + (right - left + 1) / 2. Rounding direction must always oppose the boundary that receives mid directly."
+  },
+  {
+    q: "In the sorted event log, you need the first entry with timestamp >= T, where T itself may not appear in the log. Which search is correct?",
+    options: [
+      "Template A exact-match search for T, returning -1 if absent",
+      "A lower_bound: left < right, right = mid when log[mid].ts >= T, left = mid + 1 otherwise, return left",
+      "Linear scan from the end, since recent entries are most likely",
+      "An upper_bound on T, then step forward one index"
+    ],
+    answer: 1,
+    explanation: "This is a boundary search, not an exact match — the predicate log[i].ts >= T is monotonic because the log is append-ordered, and you want its first true index. Exact match returns -1 when T is absent and tells you nothing. upper_bound finds the first entry strictly AFTER T, which wrongly skips an entry timestamped exactly T."
+  }
+];
+initQuiz('quiz', QUIZ_DATA, '0014');
+</script>
+
+<script>
+const LESSON_ID = '0014';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+
+</body>
+</html>

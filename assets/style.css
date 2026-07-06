@@ -568,3 +568,183 @@ hr {
   html { font-size: 15px; }
   .lesson-title { font-size: 1.6rem; }
 }
+
+/* ============ LEARNING ENGINE COMPONENTS ============ */
+
+/* Layout */
+.dashboard-layout { display: flex; gap: 0; min-height: 100vh; }
+.sidebar { width: 260px; flex-shrink: 0; background: #111827; color: #f9fafb; padding: 1.5rem 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; }
+.main-content { flex: 1; padding: 2rem 2rem 5rem; max-width: 760px; }
+
+/* Avatar */
+.avatar-circle { width: 48px; height: 48px; border-radius: 50%; background: var(--accent); color: white; font-family: var(--font-ui); font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+/* Level badge */
+.level-badge { display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-ui); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; padding: 0.2rem 0.55rem; border-radius: 999px; background: #1d4ed8; color: #bfdbfe; }
+
+/* XP bar */
+.xp-bar-wrap { }
+.xp-bar-label { font-family: var(--font-ui); font-size: 0.72rem; color: #9ca3af; margin-bottom: 0.35rem; display: flex; justify-content: space-between; }
+.xp-bar { background: #374151; border-radius: 999px; height: 6px; overflow: hidden; }
+.xp-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 999px; transition: width 0.4s ease; }
+
+/* Streak badge */
+.streak-badge { font-family: var(--font-ui); font-size: 0.85rem; font-weight: 700; color: #fbbf24; }
+.streak-badge .streak-count { font-size: 1.3rem; }
+
+/* Sidebar card */
+.sidebar-card { background: #1f2937; border-radius: 8px; padding: 1rem; font-family: var(--font-ui); font-size: 0.82rem; }
+.sidebar-card-label { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #6b7280; margin-bottom: 0.5rem; }
+.sidebar-card-title { font-size: 0.88rem; font-weight: 700; color: #f9fafb; margin-bottom: 0.3rem; line-height: 1.4; }
+.sidebar-card-sub { font-size: 0.78rem; color: #9ca3af; line-height: 1.4; }
+.sidebar-card-xp { font-size: 0.72rem; color: #34d399; margin-top: 0.4rem; font-weight: 600; }
+
+/* Stats row in sidebar */
+.sidebar-stats { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.sidebar-stat { background: #1f2937; border-radius: 6px; padding: 0.5rem 0.75rem; text-align: center; flex: 1; min-width: 60px; }
+.sidebar-stat strong { display: block; font-size: 1.1rem; color: #f9fafb; font-family: var(--font-ui); }
+.sidebar-stat span { font-size: 0.65rem; color: #6b7280; font-family: var(--font-ui); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* Lesson card completed state */
+.lesson-card.completed { border-color: #bbf7d0; background: #f0fdf4; }
+.lesson-card.completed .lesson-card-title { color: #15803d; }
+.lesson-card.completed .lesson-num { background: #bbf7d0; color: #15803d; }
+.lesson-card.completed::after { content: '✓'; position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); color: #16a34a; font-weight: 700; font-size: 1rem; }
+.lesson-card { position: relative; }
+
+/* Review due badge */
+.review-badge { display: inline-block; font-family: var(--font-ui); font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.1rem 0.35rem; border-radius: 4px; background: #fef3c7; color: #92400e; margin-left: 0.4rem; vertical-align: middle; }
+
+/* Mark read bar */
+.mark-read-bar { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1.1rem; margin: 1.5rem 0; display: flex; align-items: center; justify-content: space-between; font-family: var(--font-ui); font-size: 0.88rem; box-shadow: var(--shadow); }
+.mark-read-bar.completed { background: var(--success-light); border-color: #bbf7d0; }
+.xp-toast-inline { font-family: var(--font-ui); font-size: 0.9rem; font-weight: 700; color: var(--success); }
+
+/* Achievement card */
+.achievements-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; margin: 1rem 0; }
+.achievement-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; text-align: center; font-family: var(--font-ui); }
+.achievement-card.earned { border-color: #fbbf24; background: #fffbeb; }
+.achievement-card.locked { opacity: 0.45; filter: grayscale(1); }
+.achievement-card .ach-icon { font-size: 1.5rem; margin-bottom: 0.35rem; }
+.achievement-card .ach-label { font-size: 0.75rem; font-weight: 700; margin-bottom: 0.2rem; }
+.achievement-card .ach-desc { font-size: 0.68rem; color: var(--muted); line-height: 1.4; }
+
+/* Lesson progress bar at top of lesson */
+.lesson-progress-bar { background: var(--pill-bg); border-radius: 999px; height: 4px; margin-bottom: 1.5rem; overflow: hidden; }
+.lesson-progress-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+.lesson-progress-label { font-family: var(--font-ui); font-size: 0.72rem; color: var(--muted); margin-bottom: 0.4rem; display: flex; justify-content: space-between; }
+
+/* Focus mode */
+.focus-btn { font-family: var(--font-ui); font-size: 0.75rem; font-weight: 600; padding: 0.3rem 0.75rem; border-radius: 5px; border: 1px solid var(--border); background: white; cursor: pointer; color: var(--muted); transition: all 0.15s; }
+.focus-btn:hover { border-color: var(--accent); color: var(--accent); }
+.focus-mode-active .home-nav, .focus-mode-active .ask-teacher, .focus-mode-active .lesson-footer .lesson-nav-links { display: none !important; }
+.focus-mode-active body { background: #fefefe; }
+
+/* Pomodoro timer */
+.pomodoro { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #1e1e2e; color: #cdd6f4; font-family: var(--font-mono); font-size: 0.88rem; padding: 0.6rem 1rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; z-index: 100; cursor: pointer; }
+.focus-mode-active .pomodoro { display: block; }
+
+/* XP Score in quiz */
+.quiz-xp-line { font-family: var(--font-ui); font-size: 0.88rem; color: #16a34a; font-weight: 600; margin-top: 0.5rem; }
+.quiz-review-line { font-family: var(--font-ui); font-size: 0.82rem; color: var(--muted); margin-top: 0.25rem; }
+
+/* Nav prev/next */
+.lesson-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-family: var(--font-ui); font-size: 0.88rem; }
+.lesson-nav a { color: var(--accent); text-decoration: none; display: flex; align-items: center; gap: 0.3rem; }
+.lesson-nav a:hover { text-decoration: underline; }
+
+/* Mobile */
+@media (max-width: 768px) {
+  .dashboard-layout { flex-direction: column; }
+  .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; padding: 1rem; gap: 0.75rem; }
+  .main-content { padding: 1rem 1rem 4rem; }
+}
+
+/* ============ CATEGORY DRILL-DOWN NAVIGATION ============ */
+
+.breadcrumb-nav {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.breadcrumb-nav a { color: var(--muted); text-decoration: none; }
+.breadcrumb-nav a:hover { color: var(--accent); opacity: 1; }
+.breadcrumb-nav .crumb-current { color: var(--text); font-weight: 700; }
+.breadcrumb-nav .crumb-sep { color: var(--border); }
+
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.category-card {
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.4rem;
+  background: white;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.category-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(37,99,235,0.1); transform: translateY(-1px); opacity: 1; }
+.category-card.coming-soon { opacity: 0.6; cursor: default; }
+.category-card.coming-soon:hover { transform: none; box-shadow: none; border-color: var(--border); }
+
+.category-card-icon { font-size: 1.6rem; margin-bottom: 0.6rem; }
+.category-card-label { font-family: var(--font-ui); font-size: 1.02rem; font-weight: 700; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; }
+.category-card-desc { font-family: var(--font-ui); font-size: 0.82rem; color: var(--muted); line-height: 1.5; margin-bottom: 0.75rem; }
+.category-card-progress { font-family: var(--font-ui); font-size: 0.72rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; }
+
+.subcategory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.subcategory-card {
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.15rem;
+  background: white;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.subcategory-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(37,99,235,0.1); transform: translateY(-1px); opacity: 1; }
+.subcategory-card-label { font-family: var(--font-ui); font-size: 0.92rem; font-weight: 700; margin-bottom: 0.3rem; }
+.subcategory-card-desc { font-family: var(--font-ui); font-size: 0.78rem; color: var(--muted); line-height: 1.45; margin-bottom: 0.5rem; }
+.subcategory-card-count { font-family: var(--font-ui); font-size: 0.7rem; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ---- Mermaid diagram frame ---- */
+.diagram-frame {
+  border: 1px solid var(--border);
+  background: #fcfcfb;
+  border-radius: 10px;
+  padding: 1.25rem 1.25rem 0.75rem;
+  margin: 1.5rem 0 1.75rem;
+  box-shadow: var(--shadow);
+}
+.diagram-frame-label {
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}
+.diagram-frame .mermaid { display: flex; justify-content: center; }
+.diagram-frame svg { max-width: 100%; height: auto; }
+/* Mermaid renders into the <pre class="mermaid"> element in place — override the
+   site's dark code-block styling, which otherwise bleeds through as the diagram background. */
+pre.mermaid { background: transparent; color: inherit; padding: 0; margin: 0; overflow: visible; }

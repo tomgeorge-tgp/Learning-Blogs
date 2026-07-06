@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 19 — Networking Fundamentals: Sockets, TCP/IP, DNS &amp; HTTP</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 19 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:95%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Engineering Execution &nbsp;›&nbsp; Networking &amp; Cloud &nbsp;·&nbsp; Lesson 19</div>
+    <div class="pillar-badge">Networking &amp; Cloud</div>
+    <h1 class="lesson-title">Networking Fundamentals:<br>Sockets, TCP/IP, DNS &amp; HTTP</h1>
+    <p class="lesson-subtitle">Everything that happens between a browser and your FastAPI app before your route handler ever runs.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definition</h2>
+  <p>Every HTTP request is built on layers, each solving a distinct problem, each adding latency:</p>
+
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Job</th><th>Failure mode if absent</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>DNS</strong></td><td>Resolves a hostname (<code>api.applygoat.com</code>) to an IP address</td><td>The client has no idea which machine to even connect to</td></tr>
+      <tr><td><strong>TCP</strong></td><td>Establishes a reliable, ordered, bidirectional byte stream between two IP:port pairs via a 3-way handshake</td><td>Packets could arrive out of order, get duplicated, or silently drop with no retransmission</td></tr>
+      <tr><td><strong>TLS</strong></td><td>Encrypts the TCP stream and authenticates the server's identity via certificate</td><td>Anyone on the network path can read or tamper with every byte (credentials, tokens, payloads)</td></tr>
+      <tr><td><strong>HTTP</strong></td><td>A request/response text protocol layered on top of the encrypted TCP stream — method, path, headers, body</td><td>No shared convention for "what am I asking for and what am I getting back"</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">A socket is the API for all of this</span>
+    A <strong>socket</strong> is the OS-level handle a program uses to send/receive bytes over the network — the abstraction that sits underneath every HTTP client and server. When Python's <code>requests</code>, <code>httpx</code>, or Uvicorn accepts a connection, at the bottom of that call stack is a socket file descriptor the OS manages. Everything above this lesson's diagram — FastAPI routing, Pydantic validation — happens only after a socket has already been read into a buffer.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">One request, start to finish: DNS → TCP → TLS → HTTP</div>
+    <pre class="mermaid">
+sequenceDiagram
+    participant C as Client (browser/httpx)
+    participant D as DNS Resolver
+    participant S as Server (Caddy → Uvicorn)
+    C->>D: Resolve api.applygoat.com
+    D-->>C: 203.0.113.42
+    C->>S: TCP SYN (port 443)
+    S-->>C: SYN-ACK
+    C->>S: ACK — connection established
+    C->>S: TLS ClientHello
+    S-->>C: ServerHello + certificate
+    C->>S: Key exchange complete
+    Note over C,S: Encrypted channel established
+    C->>S: HTTP GET /api/applications HTTP/1.1
+    S-->>C: HTTP/1.1 200 OK + JSON body
+    Note over C,S: Connection kept alive for next request
+    </pre>
+  </div>
+
+  <h2>Plain English — A Request Hits applyGOAT</h2>
+  <p>A candidate opens their dashboard. Trace every step before their data appears:</p>
+
+  <p><strong>1. DNS resolution.</strong> The browser asks a resolver "what's the IP for <code>api.applygoat.com</code>?" This may hit a local cache, the OS resolver, the ISP's resolver, or walk the full hierarchy (root → <code>.com</code> TLD → applygoat.com's authoritative nameserver) if nothing is cached. Result: an IP address, cached for the record's TTL.</p>
+
+  <p><strong>2. TCP handshake.</strong> The browser's OS opens a socket and sends a <strong>SYN</strong> packet to that IP on port 443. The server replies <strong>SYN-ACK</strong>; the client replies <strong>ACK</strong>. Three packets, and now both sides have a reliable, ordered byte-stream connection — this is pure overhead paid before a single byte of your actual request goes anywhere, which is precisely why HTTP <strong>keep-alive</strong> (reusing one TCP connection for many requests) matters so much for latency.</p>
+
+  <p><strong>3. TLS handshake.</strong> Layered on top of the now-open TCP connection: the client and server negotiate a cipher suite, the server presents its certificate (proving it's actually applyGOAT and not an attacker), and both sides derive a shared encryption key. Everything from here on is encrypted — this is what makes HTTP into HTTPS.</p>
+
+  <p><strong>4. The actual HTTP request.</strong> Only now does the browser send bytes that look like <code>GET /api/applications HTTP/1.1\r\nHost: api.applygoat.com\r\n...</code>. In applyGOAT's deployment, this hits <strong>Caddy</strong> first (reverse proxy, TLS termination), which forwards the request over the internal Docker network to <strong>Uvicorn</strong>, which hands it to FastAPI/Starlette for routing and, eventually, your <code>async def</code> handler.</p>
+
+  <p><strong>5. The response.</strong> FastAPI returns JSON; Uvicorn writes it back over the same TCP connection; Caddy relays it back to the client, still inside the TLS session. If the connection is kept alive (the HTTP default since 1.1), the next request from this same client skips steps 2 and 3 entirely — this is why connection reuse is one of the single biggest latency wins available, and why closing/reopening connections per-request is a real performance bug.</p>
+
+  <h2>Your Stack, Mapped</h2>
+  <table>
+    <thead>
+      <tr><th>Concept</th><th>Where it lives in your stack</th><th>Why it matters</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Reverse proxy / TLS termination</strong></td><td>Caddy sits in front of Uvicorn, terminates TLS, forwards plain HTTP internally over the Docker bridge network</td><td>Uvicorn never has to manage certificates; Caddy also gives you automatic Let's Encrypt renewal — a config problem, not a code problem</td></tr>
+      <tr><td><strong>Connection keep-alive</strong></td><td><code>httpx.AsyncClient</code> reusing a connection pool for outbound calls (e.g. to OpenAI's API)</td><td>Skipping repeated TCP+TLS handshakes on every outbound API call is one of the highest-leverage latency fixes in an AI pipeline that calls external APIs constantly</td></tr>
+      <tr><td><strong>DNS caching</strong></td><td>Docker's internal DNS resolves service names (<code>postgres</code>, <code>redis</code>) to container IPs on the compose network</td><td>Container restarts get new internal IPs; service-name resolution is what makes that transparent instead of a hardcoded-IP outage</td></tr>
+      <tr><td><strong>HTTP/2 multiplexing</strong></td><td>Caddy negotiates HTTP/2 by default when the client supports it</td><td>Multiple requests share one TCP connection without head-of-line blocking at the HTTP layer — fewer handshakes under load, especially for a page loading many small API calls</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    Streaming an LLM response token-by-token (SSE, Server-Sent Events) is a single long-lived HTTP response where the server writes chunks incrementally instead of one final payload — the TCP connection and TLS session stay open for the whole generation, and the client renders each chunk as it arrives. This is why streaming responses are sensitive to any reverse proxy sitting in between (Caddy, nginx) buffering the response instead of flushing chunks immediately — a proxy misconfigured to buffer will turn a "typing" effect into one big delayed blob, which is a networking-layer bug, not an application bug, even though it looks like one from the frontend.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — Mini Hermes Agent</span>
+    MCP (Model Context Protocol) can run over different transports — stdio (a local subprocess pipe, no networking stack involved at all) or HTTP/SSE for a remote MCP server. Recognizing which transport a given MCP server uses tells you immediately whether DNS/TCP/TLS considerations apply at all: a stdio-based local tool server has none of this lesson's latency profile, while an HTTP-based remote one inherits every layer discussed here, including the same keep-alive and streaming concerns as the AI Sales Agent callout above.
+  </div>
+
+  <h2>HTTP/1.1 vs HTTP/2 vs HTTP/3</h2>
+  <table>
+    <thead>
+      <tr><th>Version</th><th>Transport</th><th>Key change</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>HTTP/1.1</strong></td><td>TCP</td><td>Keep-alive by default, but one request per connection must complete before the next starts (head-of-line blocking at the HTTP layer) unless the client opens multiple TCP connections</td></tr>
+      <tr><td><strong>HTTP/2</strong></td><td>TCP</td><td>Multiplexes many requests over a single TCP connection using binary framing — no more opening 6 parallel connections per host just to load a page faster</td></tr>
+      <tr><td><strong>HTTP/3</strong></td><td>QUIC (over UDP)</td><td>Moves multiplexing below HTTP entirely, onto QUIC, so one dropped packet only stalls the one stream it belongs to — HTTP/2 over TCP still stalls every multiplexed stream on a single lost TCP segment, since TCP itself guarantees strict ordering</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">Common mistake</span>
+    Treating "HTTPS is just HTTP with encryption" as the whole story undersells the cost: TLS adds a full extra round-trip of handshake latency on a fresh connection (mitigated by TLS 1.3's 1-RTT handshake and session resumption) — which is exactly why connection reuse and HTTP/2's single-connection multiplexing matter so much for perceived performance, not just for polish.
+  </div>
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"Walk me through what happens when you type a URL into a browser and hit enter."</div>
+          <div class="playbook-q-probe">Follow-up: "Where does TLS fit into that sequence, and what does it actually protect against?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"First, DNS resolution turns the hostname into an IP address, walking cache layers up to the authoritative nameserver if needed. Then the client opens a TCP connection to that IP via the three-way handshake — SYN, SYN-ACK, ACK — establishing a reliable byte stream. On top of that, for HTTPS, a TLS handshake negotiates encryption and the server proves its identity via certificate. Only then does the actual HTTP request go out as plaintext-looking text inside the encrypted channel — method, path, headers, body. The server's response comes back over the same connection, which then usually stays open (keep-alive) for subsequent requests instead of repeating the handshakes."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"TLS sits between TCP and HTTP — it wraps the already-established TCP connection in an encrypted, authenticated channel before any HTTP bytes are sent. It protects against two distinct things: confidentiality, so anyone intercepting the traffic on the network path sees ciphertext, not your session token or request body; and authenticity, via the certificate chain, so the client can verify it's actually talking to the real server and not a machine-in-the-middle impersonating it. Without TLS, both are absent — HTTP alone offers no protection for either."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied</div>
+          <div class="playbook-q-text">"Your API's p99 latency is dominated by handshake overhead, not your handler logic. What would you look at?"</div>
+          <div class="playbook-q-probe">Follow-up: "Would HTTP/2 or HTTP/3 help here, and why or why not?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"First I'd check whether clients are actually reusing TCP connections — keep-alive — or opening a fresh connection (and paying a full TCP + TLS handshake) per request. That's the single biggest lever: eliminating repeated handshakes entirely for a client making many sequential calls. I'd check the HTTP client configuration (connection pool size, keep-alive timeout) on both the outbound side, if this service calls other APIs, and confirm the reverse proxy in front (Caddy/nginx) isn't closing connections aggressively. I'd also check TLS session resumption is enabled, since that turns a full handshake into an abbreviated one for repeat clients."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"HTTP/2 helps if the client is making many requests to the same host and previously opened separate TCP connections per request to work around HTTP/1.1's one-request-in-flight-per-connection limitation — HTTP/2 multiplexes them over one connection, cutting handshake count dramatically. HTTP/3 helps further only if packet loss on the network path is itself a factor, since QUIC's per-stream independence avoids one dropped packet stalling every multiplexed stream the way TCP's strict ordering does under HTTP/2. If the bottleneck is purely 'too many fresh handshakes,' HTTP/2 alone captures most of the win; HTTP/3's advantage is specifically about lossy networks, not handshake count."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"Your streaming AI response (SSE) works fine locally but arrives as one big delayed chunk in production behind a reverse proxy. What's your first hypothesis?"</div>
+          <div class="playbook-q-probe">Follow-up: "How would you confirm it's the proxy and not the application code?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"My first hypothesis is response buffering at the reverse proxy layer — Caddy or nginx sitting in front of Uvicorn may be configured to buffer the full response body before forwarding it to the client, which defeats the entire point of a streaming response even though the application is correctly flushing chunks as they're generated. This is a networking/infra-layer issue, not an application bug, even though the symptom shows up in the UI as 'streaming doesn't work.'"</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"I'd check response headers for buffering-disable directives the proxy respects (e.g. `X-Accel-Buffering: no` for nginx), and check the proxy's own streaming/buffering config directives directly. To isolate it, I'd curl the Uvicorn instance directly, bypassing the proxy entirely, and watch whether chunks arrive incrementally — if they do, the application is fine and the proxy is the culprit; if they don't, the bug is upstream in FastAPI's response generation itself, e.g. accidentally buffering the full generator into a list before returning it."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview" target="_blank">HTTP Overview — MDN Web Docs</a></strong><br>
+    The clearest practitioner-level reference for HTTP semantics without RFC-level density.
+  </p>
+  <p>
+    <strong><a href="https://www.rfc-editor.org/rfc/rfc9293.html" target="_blank">RFC 9293 — Transmission Control Protocol (TCP)</a></strong><br>
+    The current TCP spec. Skim the connection establishment section (the 3-way handshake) to see the exact state machine behind what this lesson summarized.
+  </p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0018-concurrency-models.html">Lesson 18 — Concurrency Models: Threads, Processes, the GIL &amp; AsyncIO</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0020-fastapi-request-lifecycle.html">Lesson 20 — FastAPI Request Lifecycle: ASGI, Async Drivers &amp; Connection Pooling</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to trace an actual `curl -v` output line by line against this lesson's sequence diagram? Curious how Docker's internal DNS actually resolves service names between containers? Not sure how TLS session resumption avoids a full handshake on repeat connections?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 19 &nbsp;·&nbsp; Networking Fundamentals &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "Put these in the correct order for a fresh HTTPS request to a new host: (a) TLS handshake, (b) DNS resolution, (c) HTTP request/response, (d) TCP 3-way handshake.",
+    options: [
+      "a, b, c, d",
+      "b, d, a, c",
+      "c, b, d, a",
+      "d, b, a, c"
+    ],
+    answer: 1,
+    explanation: "DNS resolves the hostname to an IP first. Then TCP establishes a reliable connection to that IP via the 3-way handshake. TLS then negotiates encryption on top of that established TCP connection. Only after all of that does the actual HTTP request/response exchange happen."
+  },
+  {
+    q: "Why does reusing a TCP connection (keep-alive) matter so much for latency, especially for a service making many outbound API calls?",
+    options: [
+      "It doesn't matter — every request pays the same cost regardless of connection reuse",
+      "Reuse skips repeating the TCP 3-way handshake and the TLS handshake for every subsequent request on the same connection, avoiding those extra round-trips entirely",
+      "Keep-alive only affects the size of the response body, not latency",
+      "Keep-alive is required by the HTTP spec and cannot be disabled"
+    ],
+    answer: 1,
+    explanation: "Both the TCP and TLS handshakes require multiple network round-trips before any application data is exchanged. Reusing an already-open connection means subsequent requests skip both handshakes entirely — this is why connection pooling in an HTTP client is one of the highest-leverage latency optimizations available."
+  },
+  {
+    q: "A streaming LLM response (SSE) works locally but arrives as one delayed blob in production behind a reverse proxy. What's the most likely cause?",
+    options: [
+      "The LLM API itself doesn't support streaming in production environments",
+      "The reverse proxy (e.g. Caddy/nginx) is buffering the full response body before forwarding it to the client, defeating the incremental flush the application is performing",
+      "TCP doesn't support streaming responses at all",
+      "The client browser is caching the response"
+    ],
+    answer: 1,
+    explanation: "A reverse proxy configured to buffer responses will accumulate the full body before forwarding it downstream, which destroys the incremental-chunk behavior of a streaming response even though the application layer is generating and flushing chunks correctly."
+  },
+  {
+    q: "What does TLS add on top of a plain TCP connection, specifically?",
+    options: [
+      "Guaranteed packet ordering and retransmission of lost packets",
+      "Encryption of the data exchanged and authentication of the server's identity via a certificate, layered on top of the already-reliable TCP stream",
+      "Resolution of the hostname to an IP address",
+      "Multiplexing of multiple requests over one connection"
+    ],
+    answer: 1,
+    explanation: "TCP already guarantees ordering and reliable delivery. TLS adds confidentiality (encryption) and authenticity (certificate-based identity verification) on top of that reliable stream — a separate concern from what TCP itself solves. Ordering/retransmission is TCP's job; DNS resolution and multiplexing are separate layers entirely."
+  },
+  {
+    q: "How does HTTP/3 (over QUIC/UDP) avoid a problem that HTTP/2 (over TCP) still has when a single packet is lost?",
+    options: [
+      "HTTP/3 doesn't use multiplexing at all, so there's nothing to stall",
+      "Because TCP enforces strict in-order delivery across the whole connection, one lost packet stalls every multiplexed HTTP/2 stream sharing it; QUIC handles ordering per-stream, so a lost packet only stalls the one stream it belongs to",
+      "HTTP/3 retransmits lost packets twice as fast as TCP",
+      "HTTP/3 avoids packet loss entirely by using a different physical network"
+    ],
+    answer: 1,
+    explanation: "HTTP/2 multiplexes many logical streams over one TCP connection, but TCP's ordering guarantee is connection-wide — a single lost segment blocks delivery of everything behind it, including unrelated streams (head-of-line blocking at the transport layer). QUIC implements multiplexing and ordering per-stream, so packet loss only affects the specific stream it belongs to."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA, '0019');
+</script>
+
+<script>
+const LESSON_ID = '0019';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

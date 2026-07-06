@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 20 — FastAPI Request Lifecycle: ASGI, Async Drivers &amp; Connection Pooling</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 20 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:100%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Python &amp; Backend Systems &nbsp;›&nbsp; Web Frameworks &amp; ASGI &nbsp;·&nbsp; Lesson 20</div>
+    <div class="pillar-badge">Web Frameworks &amp; ASGI</div>
+    <h1 class="lesson-title">FastAPI Request Lifecycle:<br>ASGI, Async Drivers &amp; Connection Pooling</h1>
+    <p class="lesson-subtitle">Everything that happens between Uvicorn accepting a socket and your handler returning JSON — and the production questions that follow from it.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definition</h2>
+  <p><strong>ASGI</strong> (Asynchronous Server Gateway Interface) is the contract between a Python web server and a Python web application, successor to WSGI, designed around <code>async</code>/<code>await</code> instead of one-thread-per-request. FastAPI is built on <strong>Starlette</strong> (ASGI toolkit) plus <strong>Pydantic</strong> (validation); <strong>Uvicorn</strong> is the ASGI server that actually owns the socket and event loop.</p>
+
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Owns</th><th>Analogue from earlier lessons</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Uvicorn</strong></td><td>Accepts TCP connections, runs the asyncio event loop, parses raw HTTP into an ASGI <code>scope</code>/<code>receive</code>/<code>send</code> triple</td><td>Lesson 19's socket + HTTP parsing layer</td></tr>
+      <tr><td><strong>Starlette</strong></td><td>Routing, middleware chain, request/response objects, background tasks, dependency injection plumbing</td><td>The framework layer FastAPI extends rather than replaces</td></tr>
+      <tr><td><strong>FastAPI</strong></td><td>Pydantic-based request/response validation, OpenAPI schema generation, the dependency-injection API (<code>Depends</code>)</td><td>Where your route handler code actually lives</td></tr>
+      <tr><td><strong>Your <code>async def</code> handler</strong></td><td>Business logic, one coroutine per request, running on the shared event loop</td><td>Lesson 18's asyncio coroutine, scheduled by the event loop</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">ASGI, precisely</span>
+    An ASGI application is just a callable: <code>async def app(scope, receive, send)</code>. <code>scope</code> is a dict describing the connection (method, path, headers). <code>receive</code> is an awaitable that yields incoming message chunks (the request body, for instance). <code>send</code> is an awaitable you call to emit response chunks. FastAPI/Starlette build an enormous amount of convenience — routing, validation, dependency injection — entirely on top of this three-argument contract; there is no additional magic underneath it.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">One request, full stack — from accepted socket to committed response</div>
+    <pre class="mermaid">
+sequenceDiagram
+    participant Sock as OS Socket
+    participant UV as Uvicorn (event loop)
+    participant ST as Starlette (routing/middleware)
+    participant FA as FastAPI (validation/DI)
+    participant H as Your async def handler
+    participant Pool as asyncpg connection pool
+    participant PG as PostgreSQL
+    Sock->>UV: Bytes arrive on accepted connection
+    UV->>UV: Parse HTTP → build ASGI scope/receive/send
+    UV->>ST: await app(scope, receive, send)
+    ST->>ST: Run middleware chain, match route
+    ST->>FA: Dispatch to path operation
+    FA->>FA: Validate request body against Pydantic model
+    FA->>H: Call handler, resolving Depends()
+    H->>Pool: await conn.fetch(query)
+    Note over H,Pool: Coroutine yields here — event loop<br/>runs other requests' handlers meanwhile
+    Pool->>PG: Checked-out connection sends query over TCP
+    PG-->>Pool: Result rows
+    Pool-->>H: Rows returned, coroutine resumes
+    H-->>FA: Return value
+    FA-->>ST: Serialize to JSON via response_model
+    ST-->>UV: ASGI send() response chunks
+    UV-->>Sock: Write HTTP response bytes
+    </pre>
+  </div>
+
+  <h2>Plain English — Tracing applyGOAT's <code>GET /applications</code></h2>
+  <p>A logged-in user's dashboard requests their application list. Follow the request through every layer that's been built across this module.</p>
+
+  <p><strong>Socket to scope (Lesson 19 meets Lesson 17).</strong> Uvicorn's event loop has an already-established, kept-alive TCP connection (or accepts a new one) and reads bytes into an HTTP parser, producing an ASGI <code>scope</code> dict — method <code>GET</code>, path <code>/applications</code>, headers including the auth token. This is the first point where "networking" becomes "Python data" — the scope is an ordinary dict, a <code>PyObject</code>, subject to everything Lesson 17 covered.</p>
+
+  <p><strong>Routing and dependency injection.</strong> Starlette's router matches the path to your <code>@app.get("/applications")</code> handler. FastAPI resolves every <code>Depends(get_current_user)</code> and <code>Depends(get_db_session)</code> in the signature — each dependency is itself potentially an async generator, run before your handler body executes, and torn down (session closed) after it returns, even on exception.</p>
+
+  <p><strong>The database call — where concurrency becomes real.</strong> Inside your handler, <code>await session.execute(query)</code> asks <code>asyncpg</code> (or <code>psycopg</code> in async mode) for a connection from a <strong>connection pool</strong> — a fixed set of already-open TCP connections to PostgreSQL, reused across requests instead of opening a fresh one per call. If a connection is available, it's checked out immediately; if the pool is exhausted, this <code>await</code> blocks until one frees up. Critically: while this coroutine is suspended waiting on the database's network round-trip, <strong>the event loop is free to run other requests' handlers</strong> — this is Lesson 18's asyncio model, made concrete. One worker process can have hundreds of requests "in flight," each parked at an <code>await</code>, because waiting costs nothing but a suspended coroutine's memory.</p>
+
+  <p><strong>Response.</strong> FastAPI serializes the return value against the declared <code>response_model</code> (a Pydantic model — more validation, more object allocation, per Lesson 17), Starlette's middleware chain runs in reverse (logging, CORS headers), and Uvicorn writes the HTTP response back over the same socket, ready for keep-alive reuse by the next request.</p>
+
+  <h2>The Production Questions, Answered Directly</h2>
+  <table>
+    <thead>
+      <tr><th>Question</th><th>Answer</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Can one FastAPI server support only 100 PostgreSQL sessions?</strong></td>
+        <td>No — conflating "concurrent HTTP requests" with "concurrent DB connections" is the core misunderstanding this lesson exists to fix. A connection <strong>pool</strong> of, say, 20 connections can serve far more than 20 concurrent requests, because each request only holds a connection for the brief duration of its actual query — most of a request's wall-clock time (auth checks, serialization, waiting on other awaits) holds no connection at all. Thousands of requests can be "in flight" against a pool of 20.</td>
+      </tr>
+      <tr>
+        <td><strong>What happens when the pool is exhausted?</strong></td>
+        <td>New requests needing a connection <code>await</code> at the checkout call until one is released or a configured timeout elapses, at which point most drivers raise a timeout error. This shows up as a latency cliff under load, not a crash: p50 stays fine while p99 spikes as requests queue for a connection — the classic symptom that the pool, not the CPU, is the bottleneck.</td>
+      </tr>
+      <tr>
+        <td><strong>Should every request open a new DB connection?</strong></td>
+        <td>No — opening a PostgreSQL connection is expensive (TCP handshake, TLS if required, PostgreSQL's own auth handshake, backend process fork on the server side). A pool amortizes that cost across the application's lifetime instead of paying it per-request; this is the database-layer analogue of Lesson 19's HTTP keep-alive.</td>
+      </tr>
+      <tr>
+        <td><strong>How should pool size be configured?</strong></td>
+        <td>Roughly: enough to cover peak concurrent <em>in-database-call</em> requests, not peak concurrent HTTP requests — those are very different numbers under an async model. Oversizing wastes PostgreSQL's own connection-handling resources (each backend connection costs the database server memory); undersizing causes queuing. Start from PostgreSQL's own <code>max_connections</code> divided across all worker processes and services sharing that database, then tune from measured queue-wait time, not guesswork.</td>
+      </tr>
+      <tr>
+        <td><strong>How many Uvicorn/Gunicorn workers?</strong></td>
+        <td>One worker process per CPU core is the standard starting point (Lesson 18: each worker is a separate process with its own GIL, so this is how you actually use multiple cores) — each worker then runs its own asyncio event loop handling many concurrent connections. More workers than cores doesn't add parallelism, only context-switching overhead and — critically — multiplies your effective connection pool count, since each worker process holds its own pool.</td>
+      </tr>
+      <tr>
+        <td><strong>What happens with 10,000 concurrent users?</strong></td>
+        <td>If they're mostly idle (viewing a page, not hammering the DB), asyncio's cheap-per-connection model handles this comfortably on modest hardware — this is exactly the workload asyncio was built for. If all 10,000 are actively issuing DB-bound requests simultaneously, the actual bottleneck shifts to the database connection pool and PostgreSQL's own capacity, not to Python's concurrency model — at that point the fix is read replicas, caching (Redis), or horizontal scaling of the database tier, not more Uvicorn workers.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — eBider</span>
+    eBider's competing-bid storm is the connection-pool-exhaustion scenario made adversarial: an auction's final seconds produce a burst of concurrent bid submissions, all wanting a database connection at the same instant, and each holding it slightly longer than usual because of row-level locking contention (Lesson 18's cross-project check) on the same auction row. This is precisely where pool-size tuning and row-lock duration compound each other — a lock held a few extra milliseconds under contention can be the difference between a pool that keeps up and one that visibly queues, because every blocked request is also a connection held open longer than the happy path.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    A LangGraph-driven conversation turn typically does two things sequentially: an LLM call (seconds of pure waiting, I/O-bound, no DB connection needed) and a database write to persist conversation state (milliseconds, DB connection needed only for that instant). Structuring the handler to hold a DB connection for the entire request — including the multi-second LLM wait — instead of only around the actual database call is a real and common performance bug: it inflates a pool's effective load by however long the LLM call takes, for a resource the request didn't need during that wait at all.
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Common mistake — the sync-call-in-async-handler trap</span>
+    Calling a blocking, synchronous library (a non-async DB driver, a synchronous <code>requests.get()</code>) inside an <code>async def</code> handler without <code>await</code> blocks the <em>entire event loop</em> for that duration — every other in-flight request on that worker stalls, not just this one. This is the single most common way to accidentally destroy FastAPI's concurrency benefits: one blocking call inside an async handler silently serializes the whole worker. The fix is either a true async driver (asyncpg, httpx) or explicitly running the blocking call in a thread pool via <code>run_in_executor</code>/<code>anyio.to_thread.run_sync</code>.
+  </div>
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"Your FastAPI service has a connection pool of 20 to PostgreSQL. Can it handle 5,000 concurrent users?"</div>
+          <div class="playbook-q-probe">Follow-up: "What metric would actually tell you if the pool is too small?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Potentially yes — 'concurrent users' and 'concurrent database connections' are different numbers under an async model. A user's request holds a pooled connection only for the actual query duration, not for the full request lifecycle; most of the request's time is spent on things that need no database connection at all — auth checks, serialization, waiting on external API calls. With short queries and an async driver, a pool of 20 can service thousands of concurrent requests as long as no single request holds a connection for long. The real question isn't the pool size in isolation, it's average connection-hold time times concurrent DB-bound requests versus pool size."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Connection acquisition wait time — the time a request spends awaiting a checkout from the pool before it gets one, separate from query execution time itself. If that's consistently near zero, the pool is sized fine regardless of total user count. If it climbs under load, requests are queuing for connections and either the pool needs to grow, PostgreSQL needs more capacity, or queries need to get faster/shorter so connections free up sooner. I'd also watch PostgreSQL's own `pg_stat_activity` for connections stuck in a long-running or idle-in-transaction state — that's usually a code bug (holding a connection across an await it didn't need) rather than a genuine capacity problem."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied</div>
+          <div class="playbook-q-text">"A teammate adds a call to a synchronous, non-async HTTP client inside an async def route handler because 'it's just one line.' What's your concern?"</div>
+          <div class="playbook-q-probe">Follow-up: "How would you actually detect this had happened in a running service, after the fact?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"A synchronous call inside an async handler blocks the single event-loop thread for its entire duration — not just this request, but every other in-flight request on that worker process, since there's only one thread cooperatively switching between coroutines. One slow synchronous call turns the whole worker's concurrency into serialized, one-at-a-time execution for as long as that call takes. The fix is either swapping in a genuinely async client (httpx instead of requests) or explicitly offloading the blocking call to a thread pool via `run_in_executor` so it doesn't occupy the event loop thread."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"The signature is latency correlation across unrelated requests — if request A's latency spikes correlate suspiciously with the presence of unrelated request B in the same time window, that points at shared event-loop blocking rather than each request's own independent cost. Concretely: p99 latency on fast, simple endpoints climbing in step with traffic to a totally different, slow endpoint on the same worker is the tell. Event loop lag monitoring (measuring how late a trivial scheduled callback actually runs) is the more direct instrument, if the framework/APM supports it."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"You add more Uvicorn workers to fix slow response times, but latency doesn't improve. Why might that be?"</div>
+          <div class="playbook-q-probe">Follow-up: "What would you check before adding workers next time?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"More workers only helps if the current bottleneck is CPU or event-loop contention within existing workers — each new worker is a new process with its own GIL and its own connection pool. If the actual bottleneck is downstream — PostgreSQL itself is saturated, or an external API is slow — adding workers just means more processes queuing on the same downstream constraint, and can even make it worse: each new worker adds its own connection pool, multiplying total connections against a database that was already the limiting factor. Workers scale compute and I/O-multiplexing capacity; they don't scale a shared downstream resource."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"I'd profile where time is actually spent per request before touching worker count: is it CPU-bound work inside the handler (more workers/processes genuinely help), time waiting on the database (check pool exhaustion and query latency first — more workers can worsen this), or time waiting on an external API (that's a rate limit or third-party latency problem no amount of local scaling fixes). Only after confirming the bottleneck is 'this worker process itself is saturated with CPU or event-loop-bound work' would I add workers with confidence it'll help."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong><a href="https://asgi.readthedocs.io/en/latest/" target="_blank">ASGI Documentation (asgi.readthedocs.io)</a></strong><br>
+    The actual spec FastAPI/Starlette/Uvicorn all implement — short, and clarifies exactly where the framework abstraction ends and the raw protocol begins.
+  </p>
+  <p>
+    <strong><a href="https://www.postgresql.org/docs/current/runtime-config-connection.html" target="_blank">PostgreSQL — Connection settings (postgresql.org)</a></strong><br>
+    The server-side half of the pooling story: what <code>max_connections</code> actually costs, and why oversized pools hurt the database, not just the app.
+  </p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0019-networking-fundamentals.html">Lesson 19 — Networking Fundamentals: Sockets, TCP/IP, DNS &amp; HTTP</a><br>
+    <strong>Curriculum roadmap:</strong> more Python &amp; Backend Systems lessons (memory management deep-dive, IPC, uvloop internals), System Design, and Security Engineering lessons are next — check the curriculum page.
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to trace a real `EXPLAIN (ANALYZE, BUFFERS)` slow query alongside a pool-exhaustion incident? Curious how `anyio.to_thread.run_sync` actually offloads a blocking call without blocking the loop? Want to work out the right pool size for applyGOAT's actual worker count and traffic shape?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 20 &nbsp;·&nbsp; FastAPI Request Lifecycle &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A FastAPI service has a PostgreSQL connection pool of size 20. Why can it still serve thousands of concurrent requests without every request needing its own connection?",
+    options: [
+      "PostgreSQL doesn't actually limit connections, so the pool size is irrelevant",
+      "Each request only holds a pooled connection for the brief duration of its actual query, not for the full request lifecycle — most request time is spent on work that needs no database connection at all",
+      "FastAPI automatically creates a new connection pool for every request",
+      "Connection pools have no size limit in practice"
+    ],
+    answer: 1,
+    explanation: "Under an async model, a request checks out a connection only around the actual query, then returns it to the pool. Since most of a request's wall-clock time (auth, serialization, other awaits) needs no DB connection, a small pool can service far more concurrent requests than its size would suggest — as long as connection-hold time per request stays short."
+  },
+  {
+    q: "What actually happens when a connection pool is exhausted and a new request needs a connection?",
+    options: [
+      "The request crashes immediately with no error message",
+      "The request's await on connection checkout blocks/queues until a connection frees up or a timeout elapses, showing up as a p99 latency spike rather than a crash",
+      "PostgreSQL automatically creates additional connections beyond the configured pool size",
+      "The request is silently dropped without any error"
+    ],
+    answer: 1,
+    explanation: "Pool exhaustion manifests as requests queuing at the checkout await, producing a latency cliff — p50 often stays normal while p99 spikes as requests wait their turn — rather than an outright crash, unless a checkout timeout is configured and exceeded."
+  },
+  {
+    q: "A synchronous, blocking HTTP call is accidentally used inside an async def FastAPI handler. What's the actual impact?",
+    options: [
+      "Only that one request is slow; all other requests continue unaffected",
+      "It blocks the single event-loop thread for that worker process entirely, stalling every other in-flight coroutine/request on that same worker for the call's full duration",
+      "FastAPI automatically detects and fixes this at runtime",
+      "It has no effect since Python threads run independently regardless of async/await"
+    ],
+    answer: 1,
+    explanation: "An async worker process runs one event loop on one thread, cooperatively switching between coroutines only at await points. A blocking synchronous call has no await point, so it monopolizes that thread for its entire duration, stalling every other request's coroutine on that worker — not just the one that made the call."
+  },
+  {
+    q: "Why does adding more Uvicorn workers sometimes fail to improve latency, or even make it worse?",
+    options: [
+      "Uvicorn workers are capped at exactly 4 regardless of configuration",
+      "If the actual bottleneck is a shared downstream resource (e.g. the database itself is saturated), more workers just means more processes queuing on that same constraint — and each new worker adds its own connection pool, potentially worsening database-side contention",
+      "More workers always improve latency in every scenario",
+      "Workers and connection pools are entirely unrelated concepts"
+    ],
+    answer: 1,
+    explanation: "Workers scale CPU/event-loop capacity, not a downstream bottleneck like an already-saturated database. Since each worker process typically owns its own connection pool, adding workers when the database is the constraint can multiply total connection pressure against it rather than relieving the actual bottleneck."
+  },
+  {
+    q: "In the AI Sales Agent's conversation-turn handler, why is holding a database connection open for the entire multi-second LLM call (instead of only around the DB write) a real performance bug?",
+    options: [
+      "It has no effect on performance since connections are free",
+      "It inflates the pool's effective load by the LLM call's duration for a resource the request doesn't need during that wait, reducing the pool's capacity to serve other concurrent requests",
+      "LLM calls are always faster than database writes, so this never matters in practice",
+      "FastAPI prevents this pattern automatically"
+    ],
+    answer: 1,
+    explanation: "A connection held across an unrelated multi-second await (the LLM call) occupies a pool slot for far longer than the actual database work requires, reducing effective pool capacity for concurrent requests — the fix is acquiring the connection only around the database operation itself, not the whole handler."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA, '0020');
+</script>
+
+<script>
+const LESSON_ID = '0020';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

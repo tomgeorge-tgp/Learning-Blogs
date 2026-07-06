@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 18 — Concurrency Models: Threads, Processes, the GIL &amp; AsyncIO</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 18 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:90%"></div>
+  </div>
+
+  <header class="lesson-header">
+    <div class="lesson-meta">Python &amp; Backend Systems &nbsp;›&nbsp; Concurrency Models &nbsp;·&nbsp; Lesson 18</div>
+    <div class="pillar-badge">Concurrency Models</div>
+    <h1 class="lesson-title">Concurrency Models:<br>Threads, Processes, the GIL &amp; AsyncIO</h1>
+    <p class="lesson-subtitle">Why "just use threads" is the wrong answer more often than not — matching the concurrency model to whether work is CPU-bound or I/O-bound.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <h2>The Core Definition</h2>
+  <p><strong>In plain words first:</strong> a <strong>process</strong> is a running program with its own private chunk of memory — when you start <code>python app.py</code>, that's one process. A <strong>thread</strong> is a separate "line of execution" that lives <em>inside</em> a process and shares that process's memory with any other threads in it — cheaper to create than a whole new process, but nothing stops two threads from stepping on the same piece of shared memory at the same time unless something prevents it. A <strong>lock</strong> (a <strong>mutex</strong>, short for "mutual exclusion") is exactly that something: a flag one thread can hold so that only it, and nothing else, is allowed to run the code the lock guards, until it lets go.</p>
+
+  <p>CPython — the actual Python you run — has exactly one lock that governs its whole concurrency story: the <strong>Global Interpreter Lock (GIL)</strong>. It's "global" because there's a single one for the entire process, not one per object or per piece of code. The rule it enforces is blunt: <strong>at most one thread executes Python bytecode at a time, per process, ever</strong> — regardless of how many CPU cores the machine has sitting idle. Two threads in the same Python process can never both be running Python code at the exact same instant; they take turns holding the GIL.</p>
+
+  <table>
+    <thead>
+      <tr><th>Term</th><th>Definition</th><th>What it actually buys you</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>GIL</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: the one lock, shared by the whole process, that only lets one thread run Python code at a time.</span></td>
+        <td>A mutex around the bytecode interpreter loop (the same loop from Lesson 17 that reads and executes bytecode instructions one at a time) — only the thread currently holding this lock is allowed to execute Python bytecode; every other thread in that process has to wait its turn.</td>
+        <td>Makes <strong>refcount</strong> increments/decrements (Lesson 17's reference-counting mechanism) safe without needing a separate lock on every single object in the program. The cost of that safety: bytecode execution is <strong>serialized</strong> — done one thread at a time, never truly simultaneously, no matter how many CPU cores exist.</td>
+      </tr>
+      <tr>
+        <td><strong>Threading (<code>threading</code>)</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: several threads inside one process, all sharing the same memory, passing the one GIL back and forth between them.</span></td>
+        <td>Multiple threads in one process, sharing memory, taking turns holding the GIL — Python's built-in <code>threading</code> module is how you create and manage them.</td>
+        <td>Real concurrency, but only for <strong>I/O-bound</strong> work — work that spends most of its time <em>waiting</em> (on a network response, a disk read), not computing. The GIL is released while a thread is blocked waiting on something external, so other threads get to run Python code during that wait. It does <em>not</em> help <strong>CPU-bound</strong> work — work where the thread is doing continuous computation with nothing to wait on (adding up numbers in a loop, hashing a file, resizing an image). A thread like that never hits a point where it lets go of the GIL on its own, so it holds the lock for its whole run, and a second thread doing the same kind of computation just has to sit and wait its turn instead of running alongside it.</td>
+      </tr>
+      <tr>
+        <td><strong>Multiprocessing (<code>multiprocessing</code>)</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: several entirely separate Python programs running side by side, each with its own memory and its own GIL, talking to each other by passing messages.</span></td>
+        <td>Multiple OS processes (each a fully independent running copy of the Python interpreter, with its own memory — not shared like threads), communicating by <strong>pickling</strong> (converting a Python object into bytes so it can be sent somewhere else, then rebuilding it on the other end) data through pipes, queues, or shared memory.</td>
+        <td>True <strong>parallelism</strong> — actual simultaneous execution — for <strong>CPU-bound</strong> work — work where the bottleneck really is computation (parsing, hashing, image processing). Because each process has its <em>own separate</em> GIL, four processes can use four CPU cores at the same literal instant; four threads in one process never can.</td>
+      </tr>
+      <tr>
+        <td><strong>AsyncIO (<code>asyncio</code>)</strong><br><span style="color:var(--muted);font-size:0.85rem">In plain words: one single thread that juggles many waiting tasks at once, switching between them only at points the code explicitly marks as "I might be waiting here."</span></td>
+        <td>A single thread running an <strong>event loop</strong> (a scheduler that decides which piece of code runs next) that switches between <strong>coroutines</strong> (functions written to pause and resume, defined with <code>async def</code>) at explicit <code>await</code> points — the exact spots in the code where it's safe to say "pause me here and go run something else while I wait."</td>
+        <td>Massive I/O-bound concurrency — potentially thousands of pending tasks — with far less overhead than threads: no OS-level thread switching (which costs real time and memory), no fighting over the GIL between threads, and switching is <strong>cooperative</strong> (code chooses exactly when to yield control, at an <code>await</code>) rather than <strong>preemptive</strong> (the OS forcibly interrupting a thread mid-instruction, the way OS-level thread scheduling works).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warning">
+    <span class="callout-label">The one distinction that decides everything</span>
+    <strong>CPU-bound</strong> = the bottleneck is computation (parsing, hashing, image processing, ML inference on CPU). Only multiprocessing gives you real parallelism here. <strong>I/O-bound</strong> = the bottleneck is waiting (network calls, disk reads, database queries). Threading and asyncio both work here because the GIL is released while waiting — but asyncio wins on overhead at scale. Get this classification wrong and you'll add threads to a CPU-bound problem and watch throughput barely move, because the GIL was never the thing letting you down — the CPU was always fully used by one core.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Three concurrency models, same 4 units of work</div>
+    <pre class="mermaid">
+graph TD
+    subgraph Threading["threading — 1 process, GIL passed between threads"]
+    T1["Thread A: I/O wait"] -.GIL released.-> T2["Thread B: runs bytecode"]
+    T2 -.blocking call.-> T3["Thread A: resumes"]
+    end
+    subgraph Multiprocessing["multiprocessing — 4 processes, 4 GILs, 4 cores"]
+    P1["Process 1<br/>Core 1"]
+    P2["Process 2<br/>Core 2"]
+    P3["Process 3<br/>Core 3"]
+    P4["Process 4<br/>Core 4"]
+    end
+    subgraph AsyncIO["asyncio — 1 thread, cooperative event loop"]
+    E["Event loop"] --> C1["coroutine 1<br/>runs until await"]
+    E --> C2["coroutine 2<br/>runs until await"]
+    E --> C3["coroutine 3<br/>runs until await"]
+    end
+    style Multiprocessing fill:#dcfce7,stroke:#16a34a
+    style AsyncIO fill:#dbeafe,stroke:#2563eb
+    </pre>
+  </div>
+
+  <h2>Plain English — applyGOAT's Resume Upload Pipeline</h2>
+  <p>A user uploads a resume PDF. The pipeline has two very different phases, and applyGOAT uses a different concurrency model for each — this contrast is the whole lesson in miniature.</p>
+
+  <p><strong>Phase 1 — Extract text from the PDF.</strong> This is CPU-bound: parsing PDF structure, decoding fonts, running OCR if it's a scanned image. If you fan this out across <code>threading.Thread</code> workers, you get almost no speedup — every thread still fights for the same GIL to execute Python bytecode, and PDF parsing spends its time computing, not waiting. The fix is <code>multiprocessing</code> (or a process pool via <code>concurrent.futures.ProcessPoolExecutor</code>): each worker process gets its own interpreter, its own GIL, and genuinely runs on a separate core. Four processes on four cores parses four resumes in parallel, for real.</p>
+
+  <p><strong>Phase 2 — Call the embedding API and write to Postgres/Pinecone.</strong> This is I/O-bound: the CPU is idle while waiting for OpenAI's API and the database round-trip. Here, <code>asyncio</code> is the right tool — a single event loop can have hundreds of these requests in flight simultaneously, because "waiting for a network response" doesn't require CPU attention. Threading would technically also work (the GIL releases during the socket wait), but each OS thread costs real memory (default ~8MB stack) and the OS scheduler overhead of switching between hundreds of threads dwarfs asyncio's near-zero-cost coroutine switches. This is exactly why FastAPI's <code>async def</code> route handlers scale to thousands of concurrent connections that a thread-per-request model never could.</p>
+
+  <div class="callout">
+    <span class="callout-label">Naming the pattern precisely</span>
+    "I used asyncio to make it faster" is vague and will get probed. The precise version: "Phase 1 is CPU-bound, so I parallelized it with a process pool to actually use multiple cores past the GIL. Phase 2 is I/O-bound, so I used asyncio to hold hundreds of pending API/DB calls in one thread without the memory and scheduling cost of one OS thread per request." That sentence is the entire lesson, compressed — and it's what a senior interviewer is listening for.
+  </div>
+
+  <h2>Your Stack, Mapped</h2>
+  <table>
+    <thead>
+      <tr><th>Where it shows up</th><th>Concurrency model</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Uvicorn workers</strong> (multiple <code>--workers N</code>)</td><td>Multiprocessing</td><td>Each worker is a separate OS process with its own GIL and its own asyncio event loop — this is how FastAPI uses more than one core at all; a single worker never will, no matter how async your code is</td></tr>
+      <tr><td><strong>FastAPI <code>async def</code> route handlers</strong></td><td>AsyncIO</td><td>All the route handlers in one worker process share one event loop; each <code>await</code> on <code>asyncpg</code>/httpx yields control so other requests' handlers can run while this one waits on the network</td></tr>
+      <tr><td><strong>FastAPI <code>def</code> (sync) route handlers</strong></td><td>Threading (via Starlette's threadpool)</td><td>Starlette runs sync handlers in a bounded worker threadpool so one blocking call doesn't stall the whole event loop — a safety net, not a performance feature; the thread still fights for the GIL for any actual computation inside it</td></tr>
+      <tr><td><strong>Celery workers</strong></td><td>Multiprocessing (or threads, configurable)</td><td>CPU-heavy background jobs (resume parsing, batch scoring) run as separate OS processes precisely so they don't compete with the API process's GIL and don't block the event loop</td></tr>
+      <tr><td><strong>NumPy / PyTorch inference calls</strong></td><td>Releases the GIL internally</td><td>C-extension code that doesn't touch Python objects during its inner loop can explicitly release the GIL, so a thread blocked "inside NumPy" doesn't stall other Python threads — this is a real exception to "threading never helps CPU-bound work," specific to C extensions built this way</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — eBider</span>
+    eBider's competing-bid problem (introduced in Lesson 01/08 as an MVCC/locking scenario) has a concurrency angle too: many users submit bids on the same auction row concurrently. The GIL guarantees no two threads in one process corrupt Python-level shared state mid-mutation — but it says nothing about two separate <em>requests</em> hitting the database concurrently and racing on the same row. That race is resolved at the database layer (<code>SELECT FOR UPDATE</code>, optimistic locking with a version column), not by Python's concurrency model. The GIL protects Python's own object graph; it is not a substitute for database-level transaction isolation, and conflating the two is a common and costly interview mistake.
+  </div>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — Mini Hermes Agent</span>
+    A self-evolving agent with a persistent memory loop is naturally expressed as a long-running <code>asyncio</code> task: waiting on an LLM API call, waiting on a memory-store read, waiting on an MCP tool call — I/O-bound end to end. Running the agent loop as an <code>async def</code> coroutine inside the same event loop as the rest of the service lets it sit idle (near-zero cost) between actions instead of occupying a dedicated OS thread or process for what is, most of the time, just waiting.
+  </div>
+
+  <h2>Why Does the GIL Actually Exist? (Refcounting Is Only Part of It)</h2>
+  <p>The Core Definition table above gives the most commonly cited reason for the GIL — refcount safety — but that's one of at least four real reasons it exists and has survived largely unchanged for three decades:</p>
+  <ol>
+    <li><strong>Reference counting safety.</strong> As covered above: refcount increments/decrements must be atomic, and one global lock is the simplest way to guarantee that without a lock on every object.</li>
+    <li><strong>Interpreter implementation simplicity.</strong> It's not only object refcounts — every mutable internal structure inside the interpreter (how a dict resizes, how a list grows) would need its own careful locking without a GIL. Getting fine-grained locking right everywhere, with no deadlocks and no subtle races, is a genuinely hard engineering problem that a single global lock sidesteps entirely.</li>
+    <li><strong>C-extension ecosystem compatibility.</strong> Arguably the biggest reason the GIL has persisted this long. Decades' worth of C extensions — NumPy, and much of the ML/data stack built on it — were written assuming the GIL already protects them from concurrent access to Python objects. Removing the GIL breaks that assumption unless every extension author adds their own locking. That's a slow, ecosystem-wide coordination problem, not a fix CPython's own maintainers can make unilaterally.</li>
+    <li><strong>Single-threaded performance.</strong> A single lock is cheap for the overwhelmingly common case: a program using only one thread. Fine-grained per-object locking adds real, constant overhead — acquiring and releasing tiny locks — even when nothing is actually contended. An experimental 1990s patch that removed the GIL made ordinary single-threaded code roughly twice as slow, which is exactly the trade-off CPython's maintainers weren't willing to make for decades.</li>
+  </ol>
+  <p>One more precision worth having ready in an interview: the GIL is a <strong>CPython</strong> implementation detail, not a requirement of the Python language itself. Jython (Python compiled to run on the JVM) and IronPython (on .NET's CLR) don't use reference counting at all — they lean on their host platform's own garbage collector for memory management — so reason #1 above simply doesn't apply to them, and neither has a GIL of CPython's kind. "Python has a GIL" really means "CPython — the implementation almost everyone actually runs — has a GIL," which is a meaningfully more precise thing to say.</p>
+
+  <h2>GIL Release Points &amp; the Free-Threaded Future</h2>
+  <p>The GIL is released — allowing another thread to run — at specific, predictable points: blocking I/O calls (socket reads, file reads), and periodically during long-running pure-Python bytecode loops (a "check interval" forces a release so other threads aren't starved). Some C extensions (NumPy's array math, zlib compression, hashlib) explicitly release the GIL around their internal loop because that loop never touches Python objects — this is why "NumPy releases the GIL" is a real, specific, correct thing to say, not a general exception to the CPU-bound rule.</p>
+  <p>CPython 3.13 introduced an experimental <strong>free-threaded build</strong> (PEP 703) that removes the GIL entirely, using per-object fine-grained locking instead — replacing refcounting itself with a different, thread-safe scheme (reason #1 above), which is exactly why this took roughly 30 years: the hard part was never just "protect the refcount," it was reason #3 — getting the vast C-extension ecosystem to a place where removing the GIL wouldn't silently break everything built on top of it. It's not yet the default build, and most C-extension libraries (including many used in ML/data stacks) aren't yet compatible — worth naming as "aware of the direction, not yet relying on it in production" rather than claiming it's solved.</p>
+
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"What is the GIL, and why does CPython have one?"</div>
+          <div class="playbook-q-probe">Follow-up: "If the GIL only allows one thread to run Python at a time, why does threading exist at all?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"The GIL is a single mutex around the bytecode-execution loop — at most one thread executes Python bytecode at a time, no matter how many CPU cores are available. It exists primarily because CPython's memory management relies on reference counting, and refcount increments/decrements on shared objects need to be atomic. Rather than adding a lock to every single object (expensive, and easy to deadlock), CPython uses one global lock around interpretation. The trade-off: simpler, faster single-threaded execution and trivial C-extension integration, at the cost of no true multi-core parallelism for pure-Python CPU-bound code."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Because the GIL is released during blocking I/O — file reads, socket calls, time.sleep. If one thread is waiting on a network response, it releases the GIL so another thread can run Python bytecode in the meantime. So threading gives real concurrency for I/O-bound workloads even though it gives zero parallelism for CPU-bound ones. That's precisely the distinction: threading overlaps waiting, it doesn't parallelize computing."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Applied</div>
+          <div class="playbook-q-text">"You have a service that resizes and watermarks thousands of images. A teammate proposes wrapping the resize calls in asyncio for speed. Do you agree?"</div>
+          <div class="playbook-q-probe">Follow-up: "What if the image library is a C extension that releases the GIL during its resize call — does your answer change?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"No — image resizing is CPU-bound, and asyncio doesn't add parallelism, it adds concurrency for waiting. Wrapping a synchronous CPU-heavy call in `async def` without ever awaiting anything inside it just runs it on the event loop thread, blocking every other coroutine in that process until it finishes — actually worse than doing nothing, because it stalls unrelated I/O-bound requests too. The right tool is a process pool — `concurrent.futures.ProcessPoolExecutor` — to spread the resize work across cores, each in its own process with its own GIL."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"It changes the threading answer, not the asyncio one. If the resize call is implemented in C and explicitly releases the GIL during its internal loop (many image libraries do, similar to NumPy), then `threading` — not asyncio — becomes viable for real parallelism, because multiple threads can be inside that C code simultaneously on separate cores while the GIL sits released. I'd verify this against the specific library's documentation rather than assume it, since 'GIL-releasing C extension' is a property of that specific function, not a general guarantee."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"Does the GIL mean Python code is thread-safe by default? Can I skip locks around shared state if I use threading?"</div>
+          <div class="playbook-q-probe">Follow-up: "Give a concrete example where two threads corrupt shared state despite the GIL."</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"No — this is a common misconception. The GIL guarantees that individual bytecode instructions execute atomically, but most Python statements compile to multiple bytecode instructions, and the GIL can switch threads between any two of them. `counter += 1` is a read, an add, and a write — three separate opportunities for a thread switch in between. Two threads can both read the same old value before either writes back the increment, losing an update. The GIL prevents low-level memory corruption of CPython's internals; it does not prevent race conditions in your application logic. You still need `threading.Lock` (or an atomic higher-level primitive) around any shared mutable state that multiple threads modify."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Classic case: a shared dict used as an in-memory counter or cache, incremented by multiple threads handling concurrent requests — `cache[key] = cache.get(key, 0) + 1` run by two threads near-simultaneously can lose an increment, because the get, add, and set are three separate bytecode-level steps the GIL can interleave between. Run this ten thousand times across threads without a lock and the final count will be measurably less than ten thousand. The fix is a `Lock` around the read-modify-write, or using `collections.Counter` with explicit locking, or moving the counter out of process-local memory into something like Redis with atomic `INCR`."</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong><a href="https://docs.python.org/3/library/asyncio.html" target="_blank">asyncio — Asynchronous I/O (docs.python.org)</a></strong><br>
+    The authoritative reference for the event loop model FastAPI is built on.
+  </p>
+  <p>
+    <strong><a href="https://peps.python.org/pep-0703/" target="_blank">PEP 703 — Making the Global Interpreter Lock Optional (Python.org)</a></strong><br>
+    The proposal behind CPython's free-threaded build — worth reading to understand where GIL removal is actually headed and what it costs C-extension authors.
+  </p>
+
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0017-python-execution-model.html">Lesson 17 — Python Execution Model: Bytecode &amp; the CPython VM</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0019-networking-fundamentals.html">Lesson 19 — Networking Fundamentals: Sockets, TCP/IP, DNS &amp; HTTP</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Want to work through the `counter += 1` race condition with actual bytecode via `dis`? Curious how asyncio's event loop decides which coroutine to resume next? Want to sketch what applyGOAT's resume pipeline looks like with an explicit process pool + async I/O split?<br><br>
+    Go back to the chat and ask — that's what I'm here for.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 18 &nbsp;·&nbsp; Concurrency Models &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A background job resizes 10,000 images (pure-Python resize logic, no GIL-releasing C extension). Which concurrency model gives real speedup on a 4-core machine?",
+    options: [
+      "threading.Thread with 4 threads",
+      "asyncio with 4 concurrent coroutines",
+      "multiprocessing / ProcessPoolExecutor with 4 worker processes",
+      "None of these help — Python cannot use multiple cores under any model"
+    ],
+    answer: 2,
+    explanation: "Image resizing is CPU-bound. Threading and asyncio only help by overlapping *waiting* time (I/O), not computation, because the GIL still serializes bytecode execution within one process. Only separate processes — each with its own interpreter and GIL — actually run on separate cores simultaneously."
+  },
+  {
+    q: "Why is the GIL released during a blocking socket read but not during a tight pure-Python computation loop?",
+    options: [
+      "Sockets are implemented in C and explicitly release the GIL while waiting on the OS/network, since no Python bytecode needs to run during that wait; a pure-Python loop is continuously executing bytecode and holds the GIL throughout",
+      "The GIL is only relevant to network code, not computation",
+      "Sockets never actually use the GIL at all",
+      "Pure-Python loops release the GIL every single instruction automatically"
+    ],
+    answer: 0,
+    explanation: "Blocking I/O calls are implemented in C and release the GIL for the duration of the OS-level wait, since there's nothing for the interpreter to do until data arrives — letting other threads run. A CPU-bound Python loop is constantly executing bytecode, so it holds the GIL except at periodic forced check-interval releases."
+  },
+  {
+    q: "Why does FastAPI need multiple Uvicorn worker processes (not just async def handlers) to use more than one CPU core?",
+    options: [
+      "Async def handlers already use every core automatically",
+      "Each worker is a separate OS process with its own GIL and event loop; a single process, however async its code, is still bound by one GIL and runs on effectively one core at a time for CPU work",
+      "Uvicorn workers are unrelated to the GIL and only affect memory usage",
+      "FastAPI doesn't support multiple workers"
+    ],
+    answer: 1,
+    explanation: "Within one process, asyncio's event loop is still bound by CPython's single GIL — it multiplexes I/O waiting, not CPU parallelism. To actually use multiple cores, you need multiple OS processes (Uvicorn --workers N), each with an independent interpreter and GIL."
+  },
+  {
+    q: "Two threads run `cache[key] = cache.get(key, 0) + 1` on a shared dict without a lock, many times concurrently. What happens, and why doesn't the GIL prevent it?",
+    options: [
+      "Nothing — the GIL makes every Python statement atomic, so this is always safe",
+      "The final count can be less than the true total, because the get/add/set sequence is multiple bytecode instructions, and the GIL can switch threads between them, letting two threads both read the same stale value before either writes back",
+      "It raises a RuntimeError immediately",
+      "The dict becomes permanently corrupted and unusable"
+    ],
+    answer: 1,
+    explanation: "The GIL guarantees individual bytecode instructions are atomic, not multi-instruction statements. A read-modify-write spans several instructions, so a thread switch mid-sequence lets two threads race on the same stale read, losing an update. This is why explicit locks are still required around shared mutable state even with the GIL present."
+  },
+  {
+    q: "In eBider's competing-bid scenario, two concurrent HTTP requests try to update the same auction row. Does CPython's GIL protect against this race?",
+    options: [
+      "Yes — the GIL serializes all requests across the whole application",
+      "No — the GIL only protects Python's own in-process object graph from corruption; concurrent database writes from separate requests (possibly separate processes/workers entirely) are a database-level concern requiring row locks or optimistic concurrency control, not a Python threading concern",
+      "Yes, but only if the requests are handled by the same Uvicorn worker",
+      "No — this scenario cannot occur in a database at all"
+    ],
+    answer: 1,
+    explanation: "The GIL is scoped to a single process's Python interpreter — it says nothing about two separate requests (routed to different async tasks, different worker processes, or even different servers) racing on the same database row. That race is resolved with SELECT FOR UPDATE, advisory locks, or an optimistic version column at the database layer."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA, '0018');
+</script>
+
+<script>
+const LESSON_ID = '0018';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>

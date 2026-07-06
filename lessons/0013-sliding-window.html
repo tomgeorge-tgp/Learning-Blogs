@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 13 — Sliding Window</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 13 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:65%"></div>
+  </div>
+
+  <!-- Header -->
+  <header class="lesson-header">
+    <div class="lesson-meta">Data Structures &amp; Algorithms &nbsp;›&nbsp; Array &amp; String Patterns &nbsp;·&nbsp; Lesson 13</div>
+    <div class="pillar-badge">Array & String Patterns</div>
+    <h1 class="lesson-title">Sliding Window</h1>
+    <p class="lesson-subtitle">A window that grows and shrinks over a sequence — the pattern behind every "longest/shortest subarray satisfying X" question.</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <!-- Core definition -->
+  <h2>Core Definition</h2>
+  <p>Sliding window is <strong>two pointers, specialized</strong>: both pointers move only forward, and together they define a <strong>contiguous window</strong> <code>[left..right]</code> over an array or string. You maintain a <strong>running aggregate</strong> of the window's contents — a sum, a count, a frequency map — and update it <em>incrementally</em> as elements enter on the right and leave on the left. That incremental update is the entire trick: brute force recomputes the aggregate for every candidate subarray (O(n²) candidates × O(k) recompute), while sliding window touches each element exactly twice — once entering, once leaving — for <strong>O(n) total</strong>.</p>
+  <p>If you did Lesson 12: converging two pointers walk toward each other and the "window" between them is what you're discarding. Here the pointers chase each other in the same direction and the window between them is what you're <em>measuring</em>.</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Fixed-size window</th><th>Variable-size window</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Window size</strong></td>
+        <td>Given as <code>k</code> in the problem statement. Window never shrinks below or grows above <code>k</code>.</td>
+        <td>Unknown — the size <em>is the answer</em> (or determines it). Window grows and shrinks as it slides.</td>
+      </tr>
+      <tr>
+        <td><strong>When to use</strong></td>
+        <td>"…of size k", "…every window of length k", "…k consecutive elements"</td>
+        <td>"longest/shortest/smallest subarray or substring such that &lt;condition&gt;"</td>
+      </tr>
+      <tr>
+        <td><strong>Canonical problems</strong></td>
+        <td>Max sum subarray of size k; max average; count anagram occurrences of a pattern</td>
+        <td>Longest substring without repeating characters; minimum window substring; at most K distinct characters</td>
+      </tr>
+      <tr>
+        <td><strong>Shrink condition</strong></td>
+        <td>Mechanical: once <code>right − left + 1 &gt; k</code>, evict exactly one element from the left. No decision logic.</td>
+        <td>Semantic: shrink <em>while</em> the constraint is violated (duplicate present, &gt; K distinct, sum too large) — re-checking after each single-step eviction.</td>
+      </tr>
+      <tr>
+        <td><strong>Pointer movement</strong></td>
+        <td>Both advance in lockstep after the warm-up window is built</td>
+        <td><code>right</code> advances every iteration; <code>left</code> advances 0…n times total across the whole run</td>
+      </tr>
+      <tr>
+        <td><strong>Complexity</strong></td>
+        <td>O(n) time, O(1) extra space (or O(Σ) for a frequency map)</td>
+        <td>O(n) time — <code>left</code> and <code>right</code> each traverse the array at most once. Space O(k) or O(Σ) for the aggregate map.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">The invariant that makes it O(n)</span>
+    Neither pointer ever moves backward. <code>right</code> makes at most n moves and <code>left</code> makes at most n moves, so even though the shrink loop is nested inside the expand loop, total work is bounded by 2n — <strong>amortized O(n)</strong>, not O(n²). If your solution ever needs to move <code>left</code> backward, sliding window is the wrong tool for that problem.
+  </div>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">The Expand → Check → Shrink Loop (variable-size window)</div>
+    <pre class="mermaid">
+graph TD
+    A["EXPAND: advance right,<br/>window absorbs s[right]"] --> B["Update aggregate incrementally<br/>(freq[s[right]]++ / sum += x)"]
+    B --> C{"Constraint violated?<br/>(duplicate exists / &gt; K distinct / sum too big)"}
+    C -->|"yes"| D["SHRINK one step:<br/>evict s[left] from aggregate, left++"]
+    D --> C
+    C -->|"no"| E["Window valid →<br/>update best answer<br/>(right - left + 1)"]
+    E --> F{"right at end<br/>of input?"}
+    F -->|"no"| A
+    F -->|"yes"| G["Return best.<br/>Each element enters once, leaves once → O(n)"]
+    style C fill:#fef3c7,stroke:#d97706
+    style D fill:#fee2e2,stroke:#dc2626
+    style G fill:#dcfce7,stroke:#16a34a
+    </pre>
+  </div>
+
+  <p>Note the shrink arrow loops back to the constraint check, not forward to the answer. You evict <strong>one element at a time and re-check</strong> — the loop decides how far to shrink, you don't compute it in one jump. That distinction is where most buggy implementations die (more in the Common Mistakes section and Playbook Q3).</p>
+
+  <!-- Plain English -->
+  <h2>Plain English: Rate Limiting an API Gateway</h2>
+  <p>The interview framing is arrays and strings, but you've already met this algorithm in infrastructure. A <strong>sliding window rate limiter</strong> — "allow at most 5 requests per rolling 60 seconds per API key" — is exactly the variable-size window, except the window slides over <strong>time</strong> instead of over an <strong>array index</strong>.</p>
+  <p>Keep a queue of request timestamps per API key. On each incoming request:</p>
+
+  <pre><code>const WINDOW_MS = 60_000;   // rolling 60s window
+const LIMIT = 5;            // max requests per window
+const log = new Map();      // apiKey -> queue of timestamps (oldest first)
+
+function allowRequest(apiKey, now) {
+  const q = log.get(apiKey) ?? [];
+
+  // SHRINK from the left: evict timestamps that fell out of the window.
+  // Same move as left++ — the constraint is checked against what remains.
+  while (q.length &amp;&amp; q[0] &lt;= now - WINDOW_MS) q.shift();
+
+  // CHECK the constraint on the current window
+  if (q.length &gt;= LIMIT) return false;   // 429 Too Many Requests
+
+  // EXPAND on the right: this request enters the window
+  q.push(now);
+  log.set(apiKey, q);
+  return true;
+}</code></pre>
+
+  <p>Walk it with LIMIT = 3 and a 60s window. Requests from one key arrive at t = 0s, 10s, 20s, 30s, 65s:</p>
+
+  <pre><code>t=0s   evict: nothing older than -60s        queue []        → allow, queue [0]
+t=10s  evict: nothing ≤ -50s                 queue [0]       → allow, queue [0,10]
+t=20s  evict: nothing ≤ -40s                 queue [0,10]    → allow, queue [0,10,20]
+t=30s  evict: nothing ≤ -30s                 queue [0,10,20] → len 3 ≥ LIMIT → REJECT
+t=65s  evict: 0 ≤ 5 → shift it out           queue [10,20]   → allow, queue [10,20,65]</code></pre>
+
+  <p>Map the pieces back to the array version and it's a one-to-one correspondence: the timestamp queue <em>is</em> the window contents, <code>q.shift()</code> <em>is</em> <code>left++</code>, <code>q.push(now)</code> <em>is</em> <code>right++</code>, and <code>q.length ≥ LIMIT</code> <em>is</em> the constraint check. The only structural difference: time advances on its own, so the "shrink" happens lazily at read time (evict-then-check) rather than in a loop over indices. This is the <strong>sliding window log</strong> algorithm; the cheaper <strong>sliding window counter</strong> approximates it with two fixed buckets and a weighted interpolation — the classic memory-vs-precision trade-off when the timestamp queue per key gets too expensive at scale.</p>
+
+  <div class="callout warning">
+    <span class="callout-label">Why not a fixed window counter?</span>
+    The naive "reset the counter every minute on the minute" limiter admits a burst of 2× LIMIT straddling the boundary (5 requests at 0:59, 5 more at 1:01). The sliding window exists precisely to kill that edge — the window is anchored to <em>now</em>, not to wall-clock buckets. Same reason the array version tracks <code>[left..right]</code> continuously instead of chopping the input into fixed chunks.
+  </div>
+
+  <!-- Canonical problems mapped -->
+  <h2>The Canonical Problems, Mapped</h2>
+  <table>
+    <thead>
+      <tr><th>Problem</th><th>Window type</th><th>Aggregate / data structure</th><th>Shrink when…</th><th>Complexity</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Max sum subarray of size k</td>
+        <td>Fixed</td>
+        <td>Running <code>sum</code> (single number)</td>
+        <td>Window exceeds k — evict exactly one</td>
+        <td>O(n) time, O(1) space</td>
+      </tr>
+      <tr>
+        <td>Longest substring without repeating characters</td>
+        <td>Variable (maximize)</td>
+        <td>Frequency map (or last-seen-index map)</td>
+        <td><code>freq[s[right]] &gt; 1</code></td>
+        <td>O(n) time, O(min(n, Σ)) space</td>
+      </tr>
+      <tr>
+        <td>Longest substring with at most K distinct chars</td>
+        <td>Variable (maximize)</td>
+        <td>Frequency map + distinct count</td>
+        <td><code>map.size &gt; K</code></td>
+        <td>O(n) time, O(K) space</td>
+      </tr>
+      <tr>
+        <td>Minimum window substring</td>
+        <td>Variable (minimize)</td>
+        <td>Need-map vs have-map + "formed" counter</td>
+        <td>Inverted: shrink <em>while valid</em> to find the smallest valid window, recording best before each shrink</td>
+        <td>O(n + m) time, O(Σ) space</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Note the inversion on minimum window substring: when you're <strong>maximizing</strong>, the window is usually valid and you shrink to <em>restore</em> validity; when you're <strong>minimizing</strong>, you expand until valid and then shrink <em>while still valid</em>, harvesting the answer on the way. Same machinery, opposite harvest point — say this out loud in an interview and you've demonstrated you understand the pattern rather than having memorized one problem.</p>
+
+  <h3>How to recognize a sliding-window problem</h3>
+  <ul>
+    <li><strong>Contiguity is stated or implied:</strong> "subarray", "substring", "consecutive", "window", "rolling". If the answer can be non-contiguous (a subsequence), sliding window doesn't apply.</li>
+    <li><strong>You're optimizing under a constraint:</strong> "longest / shortest / max / min / count of … such that X". The constraint (no duplicates, ≤ K distinct, sum ≤ S) becomes your shrink condition.</li>
+    <li><strong>Monotonicity holds:</strong> expanding the window can only preserve or worsen a violation, and shrinking can only preserve or fix it. This is why "shortest subarray with sum ≥ S" works with all-positive numbers (adding elements only grows the sum) but <strong>breaks with negatives</strong> — a longer window can have a <em>smaller</em> sum, so eviction decisions stop being safe and you need prefix sums + a monotonic deque instead. Checking this before you code is a senior-signal move.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — AI Sales Agent</span>
+    Your LangGraph agent makes LLM calls per conversation session. Provider rate limits (requests-per-minute, tokens-per-minute) are rolling windows — so a per-session throttle guarding those calls is the timestamp-queue limiter above, keyed by session instead of API key, with tokens-per-minute being the same window but with a <em>weighted</em> aggregate: the running sum of token counts in the window rather than a plain length check. Evict expired entries from the left, sum what remains, compare to the TPM cap. One pattern, two constraints.
+  </div>
+
+  <!-- Fixed-size worked example -->
+  <h2>Fixed Window First: Max Sum Subarray of Size k</h2>
+  <p>The simpler variant — no shrink logic to reason about, because the shrink is mechanical: every step after warm-up, exactly one element enters and exactly one leaves.</p>
+
+  <pre><code>function maxSumOfSizeK(nums, k) {
+  let sum = 0;
+  for (let i = 0; i &lt; k; i++) sum += nums[i];   // build the first window
+  let best = sum;
+  for (let i = k; i &lt; nums.length; i++) {
+    sum += nums[i] - nums[i - k];   // one enters, one leaves — O(1) per slide
+    best = Math.max(best, sum);
+  }
+  return best;
+}</code></pre>
+
+  <pre><code>nums = [2, 1, 5, 1, 3, 2], k = 3
+
+warm-up   [2, 1, 5] 1  3  2    sum = 8            best = 8
+slide      2 [1, 5, 1] 3  2    sum = 8 + 1 - 2 = 7  best = 8
+slide      2  1 [5, 1, 3] 2    sum = 7 + 3 - 1 = 9  best = 9
+slide      2  1  5 [1, 3, 2]   sum = 9 + 2 - 5 = 6  best = 9  → return 9</code></pre>
+
+  <p>Brute force computes each of the n − k + 1 windows from scratch: O(n·k). The <code>sum += nums[i] − nums[i−k]</code> line is the whole optimization — the overlap between consecutive windows is k − 1 elements, so recomputing it is pure waste. Every sliding-window speedup, fixed or variable, is this one observation: <strong>consecutive windows overlap almost entirely, so carry the aggregate instead of rebuilding it.</strong></p>
+
+  <!-- Deep dive: full trace -->
+  <h2>Full Trace: Longest Substring Without Repeating Characters</h2>
+  <p>The canonical variable-size problem. Constraint: no character appears twice in the window. Aggregate: a frequency map. Shrink condition: the character just admitted has count &gt; 1.</p>
+
+  <pre><code>function lengthOfLongestSubstring(s) {
+  const freq = new Map();
+  let left = 0, best = 0;
+  for (let right = 0; right &lt; s.length; right++) {
+    const c = s[right];
+    freq.set(c, (freq.get(c) ?? 0) + 1);          // EXPAND
+
+    while (freq.get(c) &gt; 1) {                      // constraint violated?
+      const l = s[left];
+      freq.set(l, freq.get(l) - 1);                // SHRINK one step
+      if (freq.get(l) === 0) freq.delete(l);
+      left++;
+    }                                              // re-check, repeat
+
+    best = Math.max(best, right - left + 1);       // window valid → harvest
+  }
+  return best;
+}</code></pre>
+
+  <p>Trace on <code>s = "abcabcbb"</code>. Watch <code>right = 6</code> — it's the step that proves why the shrink is a loop, not a single eviction:</p>
+
+  <pre><code>right=0  c='a'  freq {a:1}          no violation           window [0..0] "a"    best=1
+right=1  c='b'  freq {a:1,b:1}      no violation           window [0..1] "ab"   best=2
+right=2  c='c'  freq {a:1,b:1,c:1}  no violation           window [0..2] "abc"  best=3
+
+right=3  c='a'  freq {a:2,b:1,c:1}  a:2 → VIOLATED
+         shrink: evict s[0]='a' → freq {a:1,b:1,c:1}, left=1 → a:1, fixed
+                                                             window [1..3] "bca"  best=3
+
+right=4  c='b'  freq {a:1,b:2,c:1}  b:2 → VIOLATED
+         shrink: evict s[1]='b' → freq {a:1,b:1,c:1}, left=2 → fixed
+                                                             window [2..4] "cab"  best=3
+
+right=5  c='c'  freq {a:1,b:1,c:2}  c:2 → VIOLATED
+         shrink: evict s[2]='c' → left=3 → fixed             window [3..5] "abc"  best=3
+
+right=6  c='b'  freq {a:1,b:2,c:1}  b:2 → VIOLATED
+         shrink: evict s[3]='a' → freq {b:2,c:1}, left=4 → b STILL 2, loop again
+         shrink: evict s[4]='b' → freq {b:1,c:1}, left=5 → fixed
+                                                             window [5..6] "cb"   best=3
+
+right=7  c='b'  freq {c:1,b:2}      b:2 → VIOLATED
+         shrink: evict s[5]='c' → left=6 → b STILL 2, loop again
+         shrink: evict s[6]='b' → left=7 → fixed             window [7..7] "b"    best=3
+
+return 3   ("abc")</code></pre>
+
+  <p>At <code>right = 6</code> the first eviction removes <code>'a'</code> — an innocent bystander that isn't the duplicate — and the constraint is <em>still</em> violated, so the loop evicts again. The window can't skip past <code>'a'</code>: it must stay contiguous, so everything left of the old duplicate's position has to go, one step at a time, with the aggregate updated on every eviction. That's the whole reason the shrink is <code>while</code>, not <code>if</code>.</p>
+  <p><strong>The jump optimization:</strong> you can replace the while-loop by storing each character's last-seen index and jumping <code>left = Math.max(left, lastSeen[c] + 1)</code>. Fewer operations per step, same O(n). But the <code>Math.max</code> is load-bearing — drop it and stale indices move <code>left</code> <em>backward</em>, silently re-admitting duplicates (dissected in Playbook Q3). The freq-map version has no such trap, which is why it's the safer default under interview pressure and generalizes directly to "at most K distinct" where a jump target doesn't even exist.</p>
+
+  <h3>Common mistakes</h3>
+  <ul>
+    <li><strong>Shrinking by the wrong amount.</strong> Computing "how far to move left" in one arithmetic jump instead of evicting one element at a time and re-checking. The while-loop version is self-correcting; the jump version is only correct with the <code>Math.max</code> guard against stale indices.</li>
+    <li><strong>Set where you need a frequency map.</strong> A set answers "is x present" — fine for the no-repeats problem. But "at most K distinct" and minimum-window-substring need <em>counts</em>: when you evict one <code>'b'</code> and another <code>'b'</code> remains in the window, a set deletion wrongly declares <code>'b'</code> gone. If eviction of one occurrence must not erase the character's presence, you need counts. Decrement, and only delete the key at zero.</li>
+    <li><strong>Forgetting to update the aggregate on shrink.</strong> Everyone remembers <code>freq[s[right]]++</code>; the bug magnet is the eviction side — <code>left++</code> without <code>freq[s[left]]--</code> (or without <code>sum -= nums[left]</code>). The aggregate must describe exactly the current window at all times, or every subsequent constraint check is garbage.</li>
+    <li><strong>Off-by-one on window length.</strong> It's <code>right − left + 1</code> for an inclusive <code>[left..right]</code> window. Harvest it only when the window is valid — after the shrink loop for maximize-problems, before/during the shrink for minimize-problems.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — SyncPoint</span>
+    "Alert if a workflow step fails more than N times in the last 10 minutes" is the same shape: a per-step queue of failure timestamps, evict-from-the-left on read, compare remaining length to N. Any rolling-metric feature — error-rate windows, per-user activity throttles, burst detection — is a variable-size sliding window over time. Recognizing that saves you from reaching for a cron job that recounts a database table every minute (the O(n·k) brute force of infrastructure).
+  </div>
+
+  <!-- Interview Playbook -->
+  <h2>Interview Playbook</h2>
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — The classic</div>
+          <div class="playbook-q-text">"Find the length of the longest substring without repeating characters. Talk me through your approach."</div>
+          <div class="playbook-q-probe">Follow-up: "Why is this O(n) when you have a loop inside a loop?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"Brute force checks every substring — O(n²) substrings, O(n) to verify uniqueness each, so O(n³), or O(n²) with a set. But the constraint is monotonic: if a window has a duplicate, every larger window containing it does too — so I never need to revisit shrunken ground, which means a sliding window works. I keep a window [left..right] and a frequency map of its characters. Each step I advance right and increment freq of the new character. If its count exceeds 1, the constraint is violated: I evict s[left], decrement its count, advance left, and re-check — one step at a time — until the count drops back to 1. Then the window is valid and I record max(best, right − left + 1). On 'abcabcbb' this returns 3 for 'abc'. Time O(n), space O(min(n, alphabet)). There's a variant that stores each character's last-seen index and jumps left directly, but the while-loop version is the one I'd write first — it's harder to get wrong and it generalizes to the at-most-K-distinct family."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"Because complexity is bounded by total pointer movement, not loop nesting. Right moves forward exactly n times. Left only ever moves forward, so across the entire run it moves at most n times total — the inner while-loop's iterations are shared across all outer iterations, not multiplied by them. Total work ≤ 2n, so it's amortized O(n). The intuition: each element enters the window once and leaves at most once, and we do O(1) work per entry and per exit. The nested-loop O(n²) bound would only apply if left could move backward and re-process elements — and the algorithm's core invariant is that it never does."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Pattern recognition</div>
+          <div class="playbook-q-text">"How do you decide, from the problem statement, whether it's a fixed-size or a variable-size window — or not a sliding-window problem at all?"</div>
+          <div class="playbook-q-probe">Follow-up: "'Shortest subarray with sum at least S' — sliding window? Does your answer change if the array can contain negative numbers?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"First gate: is the answer contiguous — subarray, substring, consecutive, rolling? If it's a subsequence, sliding window is out. Second: is there an explicit k? 'Every window of size k', 'k consecutive elements' → fixed window, no shrink logic, just add-one-evict-one. If instead the size is what I'm solving for — 'longest/shortest such that condition X' — it's a variable window and X becomes my shrink condition. Third gate, the one juniors skip: monotonicity. Expanding must only preserve-or-worsen a violation and shrinking must only preserve-or-fix it. If that doesn't hold, the greedy pointer movement makes unsafe decisions and the pattern breaks. Then one last orientation check: maximizing → shrink to restore validity, harvest after the shrink loop; minimizing → shrink while still valid, harvest before each shrink."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"With all-positive numbers, yes — textbook variable window. Extending the window strictly increases the sum and shrinking strictly decreases it, so 'sum ≥ S' is monotonic: expand until valid, then shrink while still valid, recording the length before each eviction. O(n). With negatives allowed, it breaks: a longer window can have a smaller sum, so shrinking might discard a prefix whose negative values were about to be offset — moving left forward is no longer a safe irreversible decision. The correct tool becomes prefix sums with a monotonic deque, which is O(n) but a genuinely different algorithm. Naming that boundary condition unprompted is exactly the check I'd run before writing any code."</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — The gotcha</div>
+          <div class="playbook-q-text">"You mentioned you can jump left straight to lastSeen[c] + 1 instead of shrinking one step at a time. What can go wrong with that?"</div>
+          <div class="playbook-q-probe">Follow-up: "Show me a concrete input that breaks the naive jump."</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">"The last-seen map is never cleaned up — it remembers occurrences that have already fallen out of the window. So lastSeen[c] can point to a stale index left of the current left pointer. If I assign left = lastSeen[c] + 1 unconditionally, a stale entry can move left backward, and that's fatal twice over: it re-admits characters I already evicted — the window's claimed contents no longer match reality, so I can report a 'longest substring' that actually contains a duplicate — and it breaks the forward-only invariant that the O(n) bound depends on. The fix is one guard: left = Math.max(left, lastSeen[c] + 1). The one-step-at-a-time freq-map version is immune by construction, because eviction physically removes each character from the aggregate as left passes it — the state can't go stale. That's why I default to it under pressure and treat the jump as an optimization to mention, not to lead with."</div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">"s = 'abba'. Trace the naive jump: right=0 'a', window 'a'. right=1 'b', window 'ab'. right=2 'b' — duplicate, lastSeen[b]=1, left jumps to 2, window 'b'. Correct so far. right=3 'a' — lastSeen[a]=0, a stale index from before the window moved. Naive jump sets left = 0 + 1 = 1: left moved backward from 2 to 1, window claims to be 'bba', length 3 — but 'bba' contains a repeated b. The algorithm returns 3; the true answer is 2 ('ab' or 'ba'). With the Math.max guard, left stays at 2, the window is 'ba', and the answer is correct. Four characters, minimal counterexample — worth memorizing as the test case for any last-seen-index implementation."</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz -->
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <!-- Sources -->
+  <h2>Primary Sources</h2>
+  <ul>
+    <li><strong>Elements of Programming Interviews — Arrays and Strings chapters.</strong> The sliding-window problems there (including minimum window substring) are the interview-calibrated versions, with the complexity arguments spelled out the way an interviewer expects to hear them.</li>
+    <li><strong>Cloudflare Engineering Blog — their rate-limiter write-ups.</strong> Search "Cloudflare counting things rate limiting" — a production account of the sliding window counter approximation and why the exact timestamp-log version doesn't survive at millions-of-keys scale. Reads as a direct systems-design continuation of this lesson's Plain English section.</li>
+  </ul>
+
+  <!-- Navigation -->
+  <div class="callout">
+    <span class="callout-label">Up next</span>
+    <strong>Previous:</strong> <a href="0012-two-pointers.html">Lesson 12 — Two Pointers</a> &nbsp;·&nbsp;
+    <strong>Next:</strong> <a href="0014-binary-search-patterns.html">Lesson 14 — Binary Search Patterns</a>
+  </div>
+
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Still fuzzy on why the nested while-loop doesn't make it O(n²)? Want to trace "abba" through the naive jump yourself and see where it lies? Not sure when minimum-window-substring's "shrink while valid" inversion applies versus the normal "shrink while violated"? Want to sketch the sliding window counter (the two-bucket approximation) for a real gateway design?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 13 &nbsp;·&nbsp; Sliding Window &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "A sliding-window solution has a while-loop (shrinking left) nested inside a for-loop (advancing right). Why is it O(n) and not O(n²)?",
+    options: [
+      "The inner loop runs at most a constant number of times per outer iteration",
+      "Both pointers only move forward, so left advances at most n times across the ENTIRE run — total work is bounded by ~2n, amortized",
+      "The frequency map makes each constraint check O(1), which cancels the nesting",
+      "It is actually O(n²) worst case; O(n) only holds on average inputs"
+    ],
+    answer: 1,
+    explanation: "The bound comes from total pointer movement, not loop nesting. right moves n times, left moves at most n times total (shared across all outer iterations, never backward). Each element enters the window once and leaves at most once, with O(1) work per entry/exit — amortized O(n), worst case included."
+  },
+  {
+    q: "In 'longest substring with at most K distinct characters', why is a frequency map required where a set would fail?",
+    options: [
+      "Sets cannot store characters, only numbers",
+      "A set has O(n) lookup while a map has O(1)",
+      "Eviction needs counts: removing one occurrence of 'b' from the window must not erase 'b' if another 'b' remains — decrement, and only delete the key at zero",
+      "The map is only an optimization; a set gives the same answers with more code"
+    ],
+    answer: 2,
+    explanation: "A set only tracks presence. When the window holds two 'b's and you evict one, a set deletion wrongly reports 'b' gone, corrupting the distinct count and every later constraint check. Duplicates inside the window demand counting, not membership."
+  },
+  {
+    q: "Fixed window, max sum of size k: after building the first window's sum, what happens on each slide?",
+    options: [
+      "Recompute the sum of the new k elements from scratch — O(k) per slide",
+      "sum += nums[i] − nums[i − k]: one element enters, one leaves, O(1) per slide",
+      "Shrink left in a while-loop until the window is valid again",
+      "Sort the current window and take the top element"
+    ],
+    answer: 1,
+    explanation: "Consecutive windows overlap in k−1 elements, so carrying the aggregate — add the entering element, subtract the leaving one — is O(1) per slide. This collapses the O(n·k) brute force to O(n), and there's no shrink logic because the eviction is mechanical: exactly one out per one in."
+  },
+  {
+    q: "The naive last-seen-index jump (left = lastSeen[c] + 1, without Math.max) fails on input 'abba'. What is the failure mechanism?",
+    options: [
+      "lastSeen['a'] = 0 is a stale index: the jump moves left BACKWARD from 2 to 1, re-admitting an evicted duplicate and reporting length 3 for 'bba'",
+      "The map runs out of memory because entries are never deleted",
+      "The jump skips over the true answer, returning 1 instead of 2",
+      "left overtakes right, so the window length goes negative"
+    ],
+    answer: 0,
+    explanation: "The last-seen map remembers occurrences that already fell out of the window. At right=3 ('a'), lastSeen['a']=0 points left of the current left=2; jumping to 1 moves left backward, the window 'bba' contains a repeated 'b', and the algorithm returns 3 instead of 2. Guard with left = Math.max(left, lastSeen[c]+1) — or use the freq-map shrink loop, which cannot go stale."
+  },
+  {
+    q: "A sliding window LOG rate limiter ('at most N requests per rolling 60s') maps onto the array pattern how?",
+    options: [
+      "It is a fixed-size window: the 60 seconds are the k",
+      "It doesn't map — rate limiting is a counter reset every minute, which is the standard approach",
+      "Evicting expired timestamps from the queue's front is the left-pointer shrink; pushing the new timestamp is the right-pointer expand; queue length vs N is the constraint check",
+      "The timestamp queue is the frequency map, so it needs counts per timestamp"
+    ],
+    answer: 2,
+    explanation: "It's a variable-size window over TIME instead of an array index: shift() expired timestamps = left++, push(now) = right++, length ≥ N = the violated constraint. The fixed 60s is the constraint's parameter, not a fixed element count — the number of requests in the window varies. (The reset-every-minute fixed counter is the naive version that admits 2× bursts across bucket boundaries.)"
+  }
+];
+initQuiz('quiz', QUIZ_DATA, '0013');
+</script>
+
+<script>
+const LESSON_ID = '0013';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+
+</body>
+</html>

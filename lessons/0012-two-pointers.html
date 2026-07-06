@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 12 — Two Pointers</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="page">
+
+  <nav class="home-nav"><a href="../index.html">← Curriculum</a></nav>
+
+  <div class="mark-read-bar" id="mark-read-bar">
+    <span style="color:var(--muted);font-family:var(--font-ui);font-size:0.85rem">Finished reading?</span>
+    <button class="btn btn-primary" onclick="handleMarkRead()">✓ Mark as read (+50 XP)</button>
+  </div>
+
+  <div class="lesson-progress-label">
+    <span>Lesson 12 of 20</span>
+    <span style="color:var(--accent)">+50 XP for reading</span>
+  </div>
+  <div class="lesson-progress-bar">
+    <div class="lesson-progress-fill" style="width:60%"></div>
+  </div>
+
+  <!-- Header -->
+  <header class="lesson-header">
+    <div class="lesson-meta">Data &amp; Storage Systems &nbsp;›&nbsp; Array &amp; String Patterns &nbsp;·&nbsp; Lesson 12</div>
+    <div class="pillar-badge">Array & String Patterns</div>
+    <h1 class="lesson-title">Two Pointers</h1>
+    <p class="lesson-subtitle">Two indices moving toward or away from each other — collapsing O(n²) pair-search into O(n).</p>
+    <div style="margin-top:0.75rem">
+      <button class="focus-btn" id="focus-btn" onclick="toggleFocus()">⊙ Focus Mode</button>
+      <span style="font-family:var(--font-ui);font-size:0.72rem;color:var(--muted);margin-left:0.5rem">Press F to toggle</span>
+    </div>
+  </header>
+
+  <!-- Core definition -->
+  <h2>The Precise Definition</h2>
+  <p>Two pointers is a family of algorithms that maintain <strong>two indices</strong> into one or two sequences and advance them according to a rule that <strong>provably eliminates candidates</strong> at every step. The brute force for any "find a pair/segment satisfying X" question is a nested loop over all Θ(n²) pairs. Two pointers replaces it with a single pass: each pointer only ever moves forward (or inward), so the total number of pointer movements is bounded by the sequence length — <strong>O(n)</strong> time, <strong>O(1)</strong> extra space.</p>
+
+  <p>The pattern only earns that speedup when the input has a <strong>monotonic property</strong> (usually sorted order) that lets one comparison rule out an entire block of pairs at once. Without that property, the pointer-move rule has no proof behind it and the "optimization" is just a wrong answer delivered quickly.</p>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Opposite-direction (converging)</th><th>Same-direction (fast/slow, read/write)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Motion</strong></td>
+        <td><code>left</code> starts at 0, <code>right</code> at n−1; they move toward each other until they meet or cross</td>
+        <td>Both pointers start at (or near) the front and move forward — at different rates, or under different conditions</td>
+      </tr>
+      <tr>
+        <td><strong>Precondition</strong></td>
+        <td>Sorted input, or a monotonic quantity that shrinks predictably as pointers converge (e.g. container width)</td>
+        <td>A loop invariant partitioning the array into processed regions (e.g. "everything before <code>write</code> is kept output")</td>
+      </tr>
+      <tr>
+        <td><strong>Canonical problems</strong></td>
+        <td>Two Sum II (sorted), Container With Most Water, Valid Palindrome, in-place reversal, 3Sum's inner loop</td>
+        <td>Remove duplicates from sorted array, Move Zeroes, Dutch National Flag partition, merging two sorted arrays/lists</td>
+      </tr>
+      <tr>
+        <td><strong>What each step eliminates</strong></td>
+        <td>Every remaining pair involving the discarded index — an entire row/column of the pair matrix per comparison</td>
+        <td>One element is classified permanently (kept, overwritten, or placed in its final region) per step</td>
+      </tr>
+      <tr>
+        <td><strong>Complexity</strong></td>
+        <td>O(n) time, O(1) space</td>
+        <td>O(n) time (O(n+m) for two sequences), O(1) extra space — often the point is <em>in-place</em></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="diagram-frame">
+    <div class="diagram-frame-label">Converging pointers on a sorted array — the decision at every step (Two Sum II)</div>
+    <pre class="mermaid">
+graph TD
+    A["Init: left = 0, right = n−1<br/>on sorted arr"] --> B{"left &lt; right?"}
+    B -->|"no"| Z["No pair exists — every candidate<br/>was eliminated with proof"]
+    B -->|"yes"| C["sum = arr[left] + arr[right]"]
+    C --> D{"sum vs target"}
+    D -->|"sum == target"| E["Found the pair ✓"]
+    D -->|"sum &lt; target"| F["arr[left] is too small even with the<br/>LARGEST remaining partner →<br/>discard ALL pairs using left → left++"]
+    D -->|"sum &gt; target"| G["arr[right] is too big even with the<br/>SMALLEST remaining partner →<br/>discard ALL pairs using right → right--"]
+    F --> B
+    G --> B
+    style E fill:#dcfce7,stroke:#16a34a
+    style Z fill:#fee2e2,stroke:#dc2626
+    </pre>
+  </div>
+
+  <h3>Worked example — Two Sum II, no hashmap</h3>
+  <p>Given a <strong>sorted</strong> array and a target, find two indices whose values sum to the target. The nested-loop brute force checks all pairs: O(n²). Converging pointers:</p>
+
+  <pre><code>function twoSumSorted(arr, target) {
+  let left = 0, right = arr.length - 1;
+  while (left &lt; right) {                  // strict &lt; : a pair needs two distinct indices
+    const sum = arr[left] + arr[right];
+    if (sum === target) return [left, right];
+    if (sum &lt; target) left++;             // arr[left] can't pair with ANYTHING remaining
+    else right--;                          // arr[right] can't pair with ANYTHING remaining
+  }
+  return null;                             // exhausted: no pair, proven
+}</code></pre>
+
+  <p>Trace with <code>arr = [2, 7, 11, 15, 19, 24]</code>, <code>target = 30</code>:</p>
+
+  <table>
+    <thead>
+      <tr><th>left</th><th>right</th><th>sum</th><th>Decision — and what it eliminates</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>0 (2)</td><td>5 (24)</td><td>26 &lt; 30</td><td>2 + 24 is too small, and 24 is the <em>largest</em> value left. So 2 paired with anything remaining is also too small — all 5 pairs involving index 0 are dead. <code>left++</code></td></tr>
+      <tr><td>1 (7)</td><td>5 (24)</td><td>31 &gt; 30</td><td>7 + 24 is too big, and 7 is the <em>smallest</em> value left. So 24 paired with anything remaining is also too big — all pairs involving index 5 are dead. <code>right--</code></td></tr>
+      <tr><td>1 (7)</td><td>4 (19)</td><td>26 &lt; 30</td><td>7 is too small even with 19, the new maximum. <code>left++</code></td></tr>
+      <tr><td>2 (11)</td><td>4 (19)</td><td>30 ✓</td><td>Found <code>[2, 4]</code> — after 4 comparisons, not 15.</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Why moving a pointer never skips the answer:</strong> when <code>sum &lt; target</code>, <code>arr[right]</code> is the largest value still in play. If <code>arr[left]</code> plus the <em>maximum</em> is still short, then <code>arr[left]</code> plus anything smaller is shorter — no pair containing <code>left</code> can ever hit the target. Discarding <code>left</code> discards only proven non-answers. The symmetric argument holds for <code>right</code> when the sum overshoots. Each comparison kills a full row or column of the n×n pair matrix, so ~n comparisons cover all ~n²/2 pairs. That elimination-per-step is the entire O(n²) → O(n) collapse — and it is exactly what evaporates if the array isn't sorted.</p>
+
+  <!-- Plain English -->
+  <h2>Plain English — The applyGOAT Scenario</h2>
+  <p>applyGOAT's matching engine has to answer, per candidate–job pair: <em>which of the job's required skills does this candidate have, and which are gaps?</em> Both lists are normalized to canonical skill IDs and stored sorted. A candidate has a sorted skill list of length <strong>n</strong>; a job has a sorted requirement list of length <strong>m</strong>.</p>
+
+  <p>The naive version is a nested loop — for each requirement, scan the whole skill list: <strong>O(n·m)</strong>. With ~300 skills against ~40 requirements that's up to 12,000 comparisons for <em>one</em> candidate–job pair; scoring one candidate against 10,000 jobs makes it 120 million. The two-pointer version walks both sorted lists once — <strong>O(n+m)</strong>, at most ~340 comparisons per pair:</p>
+
+  <pre><code>function skillGapAnalysis(skills, reqs) {   // both sorted by canonical skill ID
+  let i = 0, j = 0;
+  const matched = [], gaps = [];
+  while (i &lt; skills.length &amp;&amp; j &lt; reqs.length) {
+    if (skills[i] === reqs[j])      { matched.push(reqs[j]); i++; j++; }
+    else if (skills[i] &lt; reqs[j])   { i++; }        // candidate skill no job needs — skip it
+    else                            { gaps.push(reqs[j]); j++; }  // requirement the candidate lacks
+  }
+  while (j &lt; reqs.length) gaps.push(reqs[j++]);      // requirements past the last skill
+  return { matched, gaps };
+}</code></pre>
+
+  <p>Walk it: skills <code>[docker, fastapi, postgres, react]</code> vs requirements <code>[fastapi, kubernetes, postgres]</code>.</p>
+  <ul>
+    <li><code>docker &lt; fastapi</code> → the job never asks for docker; advance <code>i</code>. Safe because both lists are sorted: every requirement from <code>j</code> onward is ≥ <code>fastapi</code> &gt; <code>docker</code>, so <code>docker</code> can never match anything ahead.</li>
+    <li><code>fastapi === fastapi</code> → matched; advance both.</li>
+    <li><code>postgres &gt; kubernetes</code> → the candidate's remaining skills are all ≥ <code>postgres</code>, so <code>kubernetes</code> can never be matched — it's a proven <strong>gap</strong>; advance <code>j</code>.</li>
+    <li><code>postgres === postgres</code> → matched; advance both. <code>react</code> is left over on the skill side — irrelevant to this job.</li>
+  </ul>
+  <p>Result: matched <code>[fastapi, postgres]</code>, gaps <code>[kubernetes]</code>, in one linear pass. Same-direction variant, two sequences — it's structurally the merge step of merge sort, just classifying elements instead of merging them. The pointer-advance rule is justified by the same sorted-order proof as Two Sum II: whichever head is smaller can never match anything ahead of the other pointer, so discarding it loses nothing.</p>
+
+  <!-- Your stack mapped -->
+  <h2>The Canonical Problems, Mapped</h2>
+  <p>These four cover both variants and every move-rule you'll be asked to justify. Know the <em>elimination argument</em>, not just the code.</p>
+
+  <table>
+    <thead>
+      <tr><th>Problem</th><th>Variant</th><th>Pointer rule &amp; why it's safe</th><th>Complexity</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Two Sum II</strong> (sorted array)</td>
+        <td>Opposite-direction</td>
+        <td>sum &lt; target → <code>left++</code>; sum &gt; target → <code>right--</code>. Safe because the discarded index can't pair with any remaining value (sorted order).</td>
+        <td>O(n) time, O(1) space</td>
+      </tr>
+      <tr>
+        <td><strong>Container With Most Water</strong></td>
+        <td>Opposite-direction</td>
+        <td>Always move the <em>shorter</em> line inward. Width only shrinks as pointers converge, so keeping the shorter line can never yield a bigger area — every container using it at this width or narrower is dominated. Note: heights are <em>unsorted</em>; the monotonic property is the shrinking width, not sorted values.</td>
+        <td>O(n) time, O(1) space</td>
+      </tr>
+      <tr>
+        <td><strong>Valid Palindrome</strong></td>
+        <td>Opposite-direction</td>
+        <td>Compare <code>s[left]</code> vs <code>s[right]</code>, converge on match, fail on mismatch (skip non-alphanumerics first). Symmetry is the structure being exploited; same skeleton reverses an array in place via swaps.</td>
+        <td>O(n) time, O(1) space</td>
+      </tr>
+      <tr>
+        <td><strong>Merge Two Sorted Arrays</strong></td>
+        <td>Same-direction, two sequences</td>
+        <td>Take the smaller head, advance that pointer. The smaller head is ≤ everything remaining in both lists, so it's provably next in output order. (In-place variant: fill from the <em>back</em> to avoid overwriting unread elements.)</td>
+        <td>O(n+m) time</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="callout-label">Cross-project check — eBider</span>
+    Auction settlement has the same shape. To decide which lots clear, you have a sorted list of standing bid amounts and a sorted list of lot reserve prices, and want to pair each reserve with the <em>lowest</em> bid that clears it. Walk both sorted lists with two same-direction pointers: if the current bid ≥ the current reserve, pair them and advance both; if the bid is below the reserve, that bid clears nothing ahead either (reserves only get higher) — advance the bid pointer. O(bids + lots) instead of the O(bids × lots) cross-join, and the elimination argument is identical to applyGOAT's gap analysis: sorted order guarantees a discarded bid could never have cleared any later reserve.
+  </div>
+
+  <!-- Deeper: same-direction partitioning -->
+  <h2>Deeper — In-Place Partitioning (Same-Direction)</h2>
+  <p>The converging variant answers pair questions; the same-direction variant does <strong>in-place restructuring</strong> under a loop invariant. The interview staple is Move Zeroes: push all zeroes to the end, preserving the relative order of non-zeroes, O(1) extra space.</p>
+
+  <pre><code>function moveZeroes(arr) {
+  let write = 0;                          // invariant: arr[0 .. write-1] = all non-zeroes, in order
+  for (let read = 0; read &lt; arr.length; read++) {
+    if (arr[read] !== 0) {
+      [arr[write], arr[read]] = [arr[read], arr[write]];
+      write++;
+    }
+  }                                        // invariant at exit ⇒ zeroes occupy arr[write .. n-1]
+}</code></pre>
+
+  <p>The two pointers here split the array into three regions at all times: <code>[0, write)</code> = finalized non-zeroes, <code>[write, read)</code> = zeroes shuffled behind, <code>[read, n)</code> = unexamined. <code>read</code> classifies one element per step; <code>write</code> marks the boundary of finished output. Same skeleton solves "remove duplicates from sorted array": advance <code>write</code> only when <code>arr[read] !== arr[write-1]</code>.</p>
+
+  <p>The three-pointer generalization is the <strong>Dutch National Flag</strong> partition (Dijkstra) — sort an array of 0s/1s/2s in one pass, and the core of quicksort's 3-way partition:</p>
+
+  <pre><code>function dutchFlag(arr) {
+  let low = 0, mid = 0, high = arr.length - 1;
+  // invariant: [0,low) = 0s   [low,mid) = 1s   (mid,high] unexamined   (high,n) = 2s
+  while (mid &lt;= high) {                    // &lt;= not &lt; : arr[high] itself is still unexamined
+    if (arr[mid] === 0)      { [arr[low], arr[mid]] = [arr[mid], arr[low]]; low++; mid++; }
+    else if (arr[mid] === 2) { [arr[mid], arr[high]] = [arr[high], arr[mid]]; high--; }
+    else                     { mid++; }    // it's a 1 — already in the middle region
+  }
+}</code></pre>
+
+  <p>Two boundary subtleties interviewers probe: after swapping with <code>high</code>, you must <strong>not</strong> advance <code>mid</code> — the element that just arrived from the back is unexamined and could be a 0 that still needs to move to the front. After swapping with <code>low</code> you <em>can</em> advance both, because everything below <code>mid</code> has already been classified, so the swapped-in value is guaranteed to be a 1. And the loop must run while <code>mid &lt;= high</code>, not <code>&lt;</code>, or the final unexamined element is silently skipped.</p>
+
+  <h3>Common mistakes</h3>
+  <ul>
+    <li><strong>Two pointers on unsorted data with no justification.</strong> The move rule is a theorem about sorted order (or another monotone quantity). On unsorted input, "sum too big, move right left" proves nothing — you'll confidently skip the answer. Either sort first (O(n log n), and note that sorting destroys original indices — carry them as pairs if the problem wants indices) or use a hashmap.</li>
+    <li><strong><code>&lt;</code> vs <code>&lt;=</code> when pointers cross.</strong> Pair problems need <code>left &lt; right</code> — at <code>left === right</code> you'd sum an element with itself. Partition problems like Dutch Flag need <code>mid &lt;= high</code> because the element at <code>high</code> is still unclassified. Decide from the invariant, not from habit.</li>
+    <li><strong>Forgetting duplicate-skipping in 3Sum-family problems.</strong> After emitting a valid triple, advancing each pointer by exactly one lands on equal values and emits the same triple again. You must skip runs: <code>while (left &lt; right &amp;&amp; nums[left] === nums[left+1]) left++;</code> and the mirror for <code>right</code>, plus skipping duplicate anchor values <code>i</code>.</li>
+  </ul>
+
+  <div class="callout warning">
+    <span class="callout-label">The one-line litmus test</span>
+    Before writing two pointers, say out loud what a single comparison lets you <em>permanently discard</em>. If you can't complete the sentence "if this comparison goes this way, then no candidate involving index X can ever be the answer, because…" — the pattern doesn't apply, and the interviewer will find that out before you do.
+  </div>
+
+  <!-- Interview section -->
+  <h2>Interview Playbook</h2>
+  <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1rem">Click any question to reveal a model answer and follow-up response.</p>
+
+  <div class="playbook-list">
+    <div class="playbook-header-bar">// LIKELY INTERVIEW QUESTIONS — click to reveal answers</div>
+
+    <!-- Q1 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q1 — Standard opener</div>
+          <div class="playbook-q-text">"Given a sorted array, find two numbers that sum to a target — without a hashmap. Justify the complexity."</div>
+          <div class="playbook-q-probe">Follow-up: "How does this compare to the hashmap approach, and when would you pick each?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "Converging pointers: <code>left</code> at 0, <code>right</code> at n−1. If the sum equals the target, done. If it's too small, <code>left++</code> — because <code>arr[right]</code> is the largest value still available, so if <code>arr[left]</code> falls short even with the maximum, it falls short with everything; no pair containing <code>left</code> can work. Symmetrically, too big means <code>right--</code>. Every comparison permanently eliminates all pairs through one index, so we cover all Θ(n²) pairs in at most n−1 comparisons: <strong>O(n) time, O(1) space</strong>. Termination at <code>left &lt; right</code> — strict, because a pair needs two distinct indices — and if the loop exhausts, we've <em>proven</em> no pair exists, not just failed to find one."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "The hashmap is one pass: for each element, check whether <code>target − x</code> was already seen. Also O(n) time, but <strong>O(n) space</strong>, and — the key difference — it needs no sorted order. So: input already sorted, or memory-constrained, or the problem wants an <em>ordered</em> pair scan (like 3Sum's inner loop, where two pointers extends naturally and a hashmap gets messy with duplicates) → two pointers. Unsorted input where sorting isn't free, or the answer must be original indices — sorting destroys index positions — → hashmap. If someone says 'sort first, then two pointers' on an unsorted Two Sum, they've just spent O(n log n) to save O(n) space; sometimes right, but they should say the trade-off out loud."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q2 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q2 — Conceptual probe</div>
+          <div class="playbook-q-text">"When would two pointers NOT work? What exactly is the precondition?"</div>
+          <div class="playbook-q-probe">Follow-up: "Container With Most Water runs on unsorted heights — doesn't that contradict your precondition?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "The precondition isn't 'sorted' — it's an <strong>elimination proof</strong>: some monotonic structure that guarantees each pointer move discards only candidates that provably cannot be the answer. Sorted order is the most common source of that proof, but not the only one. Where it fails: pair-sum on an unsorted array — comparing <code>arr[left] + arr[right]</code> to the target tells you nothing about which direction to move, because neither end bounds the remaining values. Also subarray problems where the predicate isn't monotone — e.g. 'subarray sum equals k' with <em>negative numbers</em>: growing the window no longer monotonically grows the sum, so shrinking/growing decisions prove nothing, and you fall back to a prefix-sum hashmap."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "No — it confirms it. The monotone quantity there is the <strong>width</strong>, which strictly shrinks as the pointers converge. Area is min(height) × width. If I keep the shorter line and move inward, width goes down and the min-height can't exceed that shorter line — so every container still reachable with the shorter line is dominated by the one I already measured. Moving the shorter pointer discards only proven non-answers. That's the general form of the precondition: I don't need sorted <em>values</em>, I need a comparison whose outcome eliminates a whole set of candidates with certainty. Sorted order is just the most common way to manufacture that certainty."
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Q3 -->
+    <div class="playbook-item">
+      <button class="playbook-trigger" onclick="togglePlaybook(this)">
+        <div class="playbook-trigger-content">
+          <div class="playbook-q-label">Q3 — Gotcha</div>
+          <div class="playbook-q-text">"Your 3Sum solution returns duplicate triples. What went wrong, and where exactly do you fix it?"</div>
+          <div class="playbook-q-probe">Follow-up: "What's the overall complexity of 3Sum this way, and can two pointers do better than that?"</div>
+        </div>
+        <span class="playbook-chevron">▶</span>
+      </button>
+      <div class="playbook-body">
+        <div class="answer-block">
+          <div class="answer-label main-label">Model answer</div>
+          <div class="answer-text">
+            "3Sum is: sort, fix an anchor <code>i</code>, then run converging two pointers on the remainder for target <code>−nums[i]</code>. Duplicates leak in at <strong>two</strong> places, and both need explicit skips. First, the anchor: if <code>nums[i] === nums[i−1]</code>, every triple starting at <code>i</code> was already produced by <code>i−1</code> — <code>continue</code>. Second, inside the pointer loop: after emitting a valid triple, advancing each pointer by one may land on an equal value and re-emit the same triple — so skip runs: <code>while (left &lt; right &amp;&amp; nums[left] === nums[left+1]) left++;</code> and the mirror for <code>right</code>, then advance both once more past the run. The classic bug is doing only the anchor skip and assuming the inner loop is safe — it isn't, because sorted order packs equal values adjacent."
+          </div>
+        </div>
+        <hr class="answer-divider">
+        <div class="answer-block">
+          <div class="answer-label followup-label">Follow-up answer</div>
+          <div class="answer-text">
+            "O(n log n) for the sort plus n anchors × O(n) pointer scan = <strong>O(n²)</strong> time, O(1) extra space beyond the sort. Two pointers can't beat that here because the pattern's job is collapsing one <em>pair</em>-dimension from O(n²) to O(n) — with three free variables you still have to fix one of them, and that costs the outer n. There's also an output-size argument: 3Sum can have Θ(n²) distinct triples in the worst case, so any algorithm that lists them all is Ω(n²) regardless. The honest claim in an interview is 'O(n²), and that's essentially tight for enumerating solutions' — not 'two pointers makes everything linear'."
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout warning">
+    <span class="callout-label">Gap to watch for</span>
+    Weak candidates recite the pointer moves; strong candidates state the invariant and the elimination proof unprompted. "Move left when the sum is small" is memorization. "Moving left discards every pair containing it, because even the largest remaining partner was insufficient" is understanding — and it's what lets you re-derive the rule under pressure on a variant you've never seen.
+  </div>
+
+  <!-- Quiz -->
+  <div class="quiz-section">
+    <h2>Retrieval Practice</h2>
+    <p style="font-family:var(--font-ui);font-size:0.88rem;color:var(--muted);margin-bottom:1.25rem">Answer from memory. No scrolling up.</p>
+    <div id="quiz"></div>
+  </div>
+
+  <!-- Primary sources -->
+  <hr>
+  <h2>Primary Sources</h2>
+  <p>
+    <strong>Elements of Programming Interviews — Arrays chapter (Aziz, Lee, Prakash)</strong><br>
+    The Dutch National Flag problem opens the chapter for a reason: it's the purest exhibit of pointer invariants and in-place partitioning. Work the variants — they're exactly the boundary-condition traps interviewers set.
+  </p>
+  <p>
+    <strong><a href="https://en.wikipedia.org/wiki/Two-pointer_technique" target="_blank">Two-pointer technique — Wikipedia</a></strong><br>
+    Short, precise reference for the variants and their canonical problems. Useful as a checklist of the pattern's forms, not as a tutorial.
+  </p>
+
+  <!-- Navigation -->
+  <hr>
+  <div style="font-family:var(--font-ui);font-size:0.85rem;color:var(--muted)">
+    <strong>Previous:</strong> <a href="0011-algorithmic-complexity.html">Lesson 11 — Big-O &amp; Algorithmic Complexity Analysis</a> &nbsp;|&nbsp;
+    <strong>Next:</strong> <a href="0013-sliding-window.html">Lesson 13 — Sliding Window</a>
+  </div>
+
+  <!-- Ask teacher -->
+  <div class="ask-teacher">
+    <strong>Ask your teacher anything.</strong><br>
+    Not convinced the "never skips the answer" proof holds when the array has duplicates? Unsure why Container With Most Water counts as two pointers when the heights aren't sorted? Want to work through how the applyGOAT skill matcher extends to weighted skills or fuzzy matches, where plain equality stops being enough?<br><br>
+    Go back to the chat and ask.
+  </div>
+
+  <div class="lesson-footer">
+    <a href="../index.html">← Curriculum</a> &nbsp;·&nbsp;
+    Lesson 12 &nbsp;·&nbsp; Two Pointers &nbsp;·&nbsp; Tom George Learning System
+  </div>
+
+</div>
+
+<!-- Playbook accordion -->
+<script>
+function togglePlaybook(trigger) {
+  const item = trigger.closest('.playbook-item');
+  const body = item.querySelector('.playbook-body');
+  const isOpen = trigger.classList.contains('open');
+  document.querySelectorAll('.playbook-trigger').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.playbook-body').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    trigger.classList.add('open');
+    body.classList.add('open');
+  }
+}
+</script>
+
+<!-- Mermaid diagrams -->
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });</script>
+
+<!-- Quiz data -->
+<script src="../assets/engine.js"></script>
+<script src="../assets/quiz.js"></script>
+<script>
+const QUIZ_DATA = [
+  {
+    q: "In Two Sum II on a sorted array, sum < target and you move left forward. Why is it impossible that this skips the answer?",
+    options: [
+      "Because the answer, if it exists, always lies in the middle of a sorted array",
+      "Because arr[right] is the largest remaining value — if arr[left] falls short even with it, arr[left] can't pair with anything remaining",
+      "Because the right pointer will eventually revisit the skipped pairs on its way down",
+      "Because duplicates are guaranteed to have been removed before the scan starts"
+    ],
+    answer: 1,
+    explanation: "The elimination proof: arr[left] + arr[right] < target with arr[right] the maximum remaining means every pair containing left is < target. Discarding left discards only proven non-answers — one comparison kills all n−1 pairs through that index. Neither pointer ever moves backward; nothing is 'revisited'."
+  },
+  {
+    q: "What is the real precondition for using two pointers — the thing that must hold for the pattern to be correct?",
+    options: [
+      "The input array must be sorted ascending",
+      "The array must contain no duplicate values",
+      "Each pointer move must provably discard only candidates that cannot be the answer — some monotonic property supplies that proof",
+      "The answer must be a pair of elements rather than a subarray"
+    ],
+    answer: 2,
+    explanation: "Sorted order is the most common source of the elimination proof, but not the requirement itself. Container With Most Water works on unsorted heights because the monotone quantity is the shrinking width. Without any such property (e.g. pair-sum on unsorted data), the move rule proves nothing and the algorithm is simply wrong."
+  },
+  {
+    q: "In Move Zeroes with read/write pointers, what invariant does the write pointer maintain throughout the loop?",
+    options: [
+      "arr[0 .. write−1] contains all the zeroes found so far",
+      "arr[0 .. write−1] contains every non-zero seen so far, in original relative order",
+      "write always trails read by exactly the number of elements processed",
+      "arr[write] is always the largest element examined so far"
+    ],
+    answer: 1,
+    explanation: "The invariant is a three-region split: [0, write) = finalized non-zeroes in order, [write, read) = zeroes shuffled behind, [read, n) = unexamined. When the loop ends, the invariant directly implies zeroes fill the tail. Same-direction two pointers is invariant maintenance — that's the whole game."
+  },
+  {
+    q: "In the Dutch National Flag partition, you swap arr[mid] with arr[high] and decrement high. Why must you NOT advance mid?",
+    options: [
+      "Advancing mid would break the loop condition mid <= high prematurely",
+      "The element swapped in from the back is unexamined — it could be a 0 that still needs to move to the front",
+      "mid must always equal low + count of 1s, which advancing would violate",
+      "You must re-check arr[mid] in case the swap failed"
+    ],
+    answer: 1,
+    explanation: "Everything below mid is already classified, so a swap from low brings in a known 1 and both pointers can advance. A swap from high brings in a never-examined element — advancing mid past it would leave it unclassified. This asymmetry (and mid <= high, not <) is the classic DNF boundary trap."
+  },
+  {
+    q: "applyGOAT matches a candidate's sorted skill list (n entries) against a job's sorted requirement list (m entries). Complexity of the two-pointer walk vs the nested loop?",
+    options: [
+      "O(n+m) vs O(n·m) — each comparison permanently advances past one list head, so total steps are bounded by n+m",
+      "O(n log m) vs O(n·m) — each skill binary-searches the requirements",
+      "O(n+m) vs O(n²+m²) — the nested loop must compare within each list too",
+      "Both are O(n·m) — two pointers only reduces the constant factor"
+    ],
+    answer: 0,
+    explanation: "Every iteration advances at least one pointer and pointers never move backward, so the loop runs at most n+m times: O(n+m). The nested loop scans up to all of one list per element of the other: O(n·m). Binary search per skill (O(n log m)) is a real alternative but loses to the linear merge when you're walking both lists anyway."
+  }
+];
+
+initQuiz('quiz', QUIZ_DATA, '0012');
+</script>
+
+<!-- Learning engine: mark-read, focus mode, pomodoro -->
+<script>
+const LESSON_ID = '0012';
+(function() {
+  if (window.LearningEngine) {
+    const s = LearningEngine.getState();
+    const lesson = s.lessons[LESSON_ID];
+    if (lesson && lesson.read) {
+      const bar = document.getElementById('mark-read-bar');
+      if (bar) {
+        bar.innerHTML = '<div class="xp-toast-inline">✓ Lesson complete</div>';
+        bar.className = 'mark-read-bar completed';
+      }
+    }
+  }
+})();
+function handleMarkRead() {
+  if (!window.LearningEngine) return;
+  const result = LearningEngine.markLessonRead(LESSON_ID);
+  const bar = document.getElementById('mark-read-bar');
+  if (!bar) return;
+  bar.innerHTML = '<div class="xp-toast-inline">+' + result.xpGained + ' XP · Lesson complete ✓' + (result.newAchievements.length ? ' 🏆 ' + result.newAchievements.map(a => a.label).join(', ') : '') + '</div>';
+  bar.className = 'mark-read-bar completed';
+}
+let focusActive = false;
+function toggleFocus() {
+  focusActive = !focusActive;
+  document.body.classList.toggle('focus-mode-active', focusActive);
+  const btn = document.getElementById('focus-btn');
+  if (btn) btn.textContent = focusActive ? '✕ Exit Focus' : '⊙ Focus Mode';
+  if (focusActive) startPomodoro(); else stopPomodoro();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'BUTTON') toggleFocus();
+  }
+});
+let pomodoroInterval;
+let pomodoroSeconds = 25 * 60;
+let pomodoroBreak = false;
+function startPomodoro() {
+  pomodoroSeconds = 25 * 60;
+  pomodoroBreak = false;
+  updatePomodoroDisplay();
+  pomodoroInterval = setInterval(() => {
+    pomodoroSeconds--;
+    if (pomodoroSeconds <= 0) {
+      if (!pomodoroBreak) { pomodoroBreak = true; pomodoroSeconds = 5 * 60; }
+      else { pomodoroBreak = false; pomodoroSeconds = 25 * 60; }
+    }
+    updatePomodoroDisplay();
+  }, 1000);
+}
+function stopPomodoro() { clearInterval(pomodoroInterval); }
+function updatePomodoroDisplay() {
+  const el = document.getElementById('pomodoro-display');
+  if (!el) return;
+  const m = Math.floor(pomodoroSeconds / 60).toString().padStart(2, '0');
+  const s = (pomodoroSeconds % 60).toString().padStart(2, '0');
+  el.textContent = (pomodoroBreak ? '☕ ' : '⏱ ') + m + ':' + s;
+}
+</script>
+<div class="pomodoro" id="pomodoro-display" onclick="toggleFocus()">⏱ 25:00</div>
+</body>
+</html>
